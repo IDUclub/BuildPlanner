@@ -77,8 +77,20 @@ app/
 Большинство ошибок пайплайна сводится к рассинхрону одной из них, поэтому они покрыты
 тестом на полноту (`tests/test_constants.py`).
 
+## Показатели сценария
+
+Схема `indicators_values` сверена с OpenAPI стенда (`ScenarioIndicatorValue`):
+
+- фильтр по индикаторам делает сам Urban API — query-параметр `indicator_ids`, id через запятую;
+- `indicator_id` лежит внутри вложенного объекта `indicator`, а не в корне строки;
+- полей `date_value`/`value_type` нет — свежесть определяют `updated_at`/`created_at`;
+- значение может быть привязано к гексагону (`hexagon_id`), и таких строк в ответе большинство.
+
+Отсюда правило выбора в `UrbanApiClient.latest_values_by_indicator`: сначала территориальное
+значение (`hexagon_id` пуст), среди равных — самое свежее. Иначе можно сравнить агрегат по
+территории у одного индикатора с одной ячейкой у другого и выбрать не тот профиль.
+
 ## Что ещё не подтверждено
 
-Схема ответа `indicators_values` не проверена живым запросом — разбор в
-`UrbanApiClient.latest_values_by_indicator` намеренно терпимый (ищет `indicator_id`
-и значение по нескольким вариантам ключей). Это первый пункт плана работ в ADR.
+Имена полей запроса `POST /genplanner/run_func_generation` — сейчас предполагаем
+`{scenario_id, territory_balance, test}`, баланс берём из `GET /default/func_ratio?zone={profile_id}`.

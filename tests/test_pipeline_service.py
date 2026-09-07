@@ -5,14 +5,22 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from app.common.constants.pipeline_constants import SELECTION_INDICATOR_IDS
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.pipeline_service import PipelineService
 
-INDICATOR_VALUES = [
-    {"indicator_id": 271, "value": 0.2, "date_value": "2025-01-01"},
-    {"indicator_id": 274, "value": 0.9, "date_value": "2025-01-01"},
-    {"indicator_id": 278, "value": 0.4, "date_value": "2025-01-01"},
-]
+
+def _value_row(indicator_id: int, value: float) -> dict[str, Any]:
+    """Форма `ScenarioIndicatorValue` из OpenAPI Urban API."""
+    return {
+        "indicator": {"indicator_id": indicator_id},
+        "hexagon_id": None,
+        "value": value,
+        "updated_at": "2025-01-01T00:00:00Z",
+    }
+
+
+INDICATOR_VALUES = [_value_row(271, 0.2), _value_row(274, 0.9), _value_row(278, 0.4)]
 
 ZONES = {
     "type": "FeatureCollection",
@@ -26,8 +34,10 @@ ZONES = {
 class FakeUrban:
     def __init__(self, values: list[dict[str, Any]] | None = None):
         self.values = INDICATOR_VALUES if values is None else values
+        self.requested_ids: Any = None
 
-    async def get_scenario_indicators(self, scenario_id: int, token: str) -> list[dict[str, Any]]:
+    async def get_scenario_indicators(self, scenario_id: int, token: str, indicator_ids=None) -> list[dict[str, Any]]:
+        self.requested_ids = indicator_ids
         return self.values
 
     @staticmethod
@@ -120,6 +130,15 @@ async def test_skip_generation_stops_after_zones():
     types = [event["type"] for event in events]
     assert "zones" in types
     assert "result" not in types
+
+
+@pytest.mark.asyncio
+async def test_indicators_are_filtered_on_the_urban_api_side():
+    """У сценария сотни значений, включая гексагональные — тянем только нужные десять."""
+    urban = FakeUrban()
+    service = PipelineService(urban, FakeGenPlanner(), FakeGenBuilder())
+    await collect(service)
+    assert urban.requested_ids == SELECTION_INDICATOR_IDS
 
 
 @pytest.mark.asyncio

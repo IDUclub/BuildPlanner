@@ -190,7 +190,7 @@ class PipelineService:
             run.selection = selection
             return selection
 
-        raw_values = await self._urban.get_scenario_indicators(run.scenario_id, token)
+        raw_values = await self._urban.get_scenario_indicators(run.scenario_id, token, SELECTION_INDICATOR_IDS)
         values = self._urban.latest_values_by_indicator(raw_values, SELECTION_INDICATOR_IDS)
         try:
             selection = select_profile(values)
