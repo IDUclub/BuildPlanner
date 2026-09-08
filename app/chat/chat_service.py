@@ -86,6 +86,11 @@ class ChatService:
                     summary_lines.append(f"Показатели территории:\n{table}")
             if event["type"] == "profile_selected":
                 summary_lines.append(str(event.get("reason", "")))
+            if event["type"] == "scenario_published":
+                summary_lines.append(
+                    f"Результат сохранён сценарием {event.get('scenario_id')} "
+                    f"в проекте {event.get('project_id')} — по нему считаются оценки."
+                )
             if event["type"] == "warning" and event.get("message"):
                 summary_lines.append(str(event["message"]))
             yield event

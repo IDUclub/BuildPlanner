@@ -31,4 +31,8 @@ class PipelineResultSchema(BaseModel):
     buildings: dict[str, Any] | None = None
     targets_by_zone: dict[str, dict[str, Any]] = Field(default_factory=dict)
     mapping_summary: dict[str, Any] = Field(default_factory=dict)
+    published: dict[str, Any] | None = Field(
+        default=None,
+        description="Куда сохранён результат: `scenario_id` сервисного сценария, по нему считаются оценки",
+    )
     warnings: list[str] = Field(default_factory=list)

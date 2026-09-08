@@ -1,5 +1,6 @@
 """Оркестрация целиком, на подставных клиентах: важен порядок событий и деградация."""
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -272,6 +273,57 @@ async def test_zones_are_cached_between_runs():
     await collect(service)
     await collect(service)
     assert genplanner.calls == 1
+
+
+class FakePublisher:
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.received: dict[str, Any] | None = None
+
+    async def publish(self, **kwargs):
+        if self.fail:
+            raise HTTPException(status_code=403, detail={"msg": "нет прав"})
+        self.received = kwargs
+        return SimpleNamespace(as_dict=lambda: {"project_id": 900, "scenario_id": 777, "notified": True})
+
+
+@pytest.mark.asyncio
+async def test_published_scenario_closes_the_run():
+    publisher = FakePublisher()
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), publisher=publisher)
+    types = [event["type"] for event in await collect(service)]
+    assert types.index("result") < types.index("scenario_published")
+    assert publisher.received["profile_name"] == "жилая многоэтажная"
+
+
+@pytest.mark.asyncio
+async def test_failed_publication_does_not_lose_the_generation():
+    """Зоны и застройка уже у пользователя — потерять их из-за Urban API нельзя."""
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), publisher=FakePublisher(fail=True))
+    events = await collect(service)
+    types = [event["type"] for event in events]
+    assert "result" in types
+    assert "error" not in types
+    assert any(event.get("stage") == "publish_scenario" for event in events if event["type"] == "warning")
+
+
+@pytest.mark.asyncio
+async def test_zones_are_published_even_when_the_builder_failed():
+    """Оценки считаются и по одним зонам — незачёт застройки не отменяет расчёт."""
+    publisher = FakePublisher()
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(fail=True), publisher=publisher)
+    types = [event["type"] for event in await collect(service)]
+    assert "scenario_published" in types
+    assert publisher.received["buildings"] is None
+
+
+@pytest.mark.asyncio
+async def test_publication_can_be_turned_off_per_run():
+    publisher = FakePublisher()
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), publisher=publisher)
+    types = [event["type"] for event in await collect(service, PipelineOptionsDTO(publish=False))]
+    assert "scenario_published" not in types
+    assert publisher.received is None
 
 
 @pytest.mark.asyncio

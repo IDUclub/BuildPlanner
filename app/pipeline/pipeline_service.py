@@ -9,6 +9,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 from fastapi import HTTPException
@@ -23,6 +24,7 @@ from app.pipeline import events
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.indicators_view import build_overview
 from app.pipeline.profile_selector import NoIndicatorValuesError, ProfileSelection, select_profile
+from app.pipeline.scenario_publisher import ScenarioPublisher
 from app.pipeline.schema.pipeline_schema import PipelineResultSchema, ProfileSelectionSchema
 from app.pipeline.targets_policy import build_targets_by_zone, to_genbuilder_targets, zones_without_volume_target
 from app.pipeline.zone_mapper import map_zones_to_blocks
@@ -38,6 +40,7 @@ class PipelineRun:
     zones: dict[str, Any] | None = None
     roads: dict[str, Any] | None = None
     buildings: dict[str, Any] | None = None
+    published: dict[str, Any] | None = None
     targets_by_zone: dict[str, dict[str, Any]] = field(default_factory=dict)
     mapping_summary: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -51,11 +54,13 @@ class PipelineService:
         genplanner_client: GenPlannerClient,
         genbuilder_client: GenBuilderClient,
         cache_ttl_seconds: int = 3600,
+        publisher: ScenarioPublisher | None = None,
     ):
         self._urban = urban_client
         self._genplanner = genplanner_client
         self._genbuilder = genbuilder_client
         self._cache_ttl = cache_ttl_seconds
+        self._publisher = publisher
         self._zones_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ публичный API
@@ -77,6 +82,7 @@ class PipelineService:
             buildings=run.buildings,
             targets_by_zone=run.targets_by_zone,
             mapping_summary=run.mapping_summary,
+            published=run.published,
             warnings=run.warnings,
         )
 
@@ -91,6 +97,11 @@ class PipelineService:
         run = run or PipelineRun(scenario_id=scenario_id)
         try:
             async for event in self._execute(run, token, options):
+                yield event
+            # Публикация снаружи `_execute` намеренно: тот выходит раньше времени в
+            # нескольких местах (застройка пропущена, застраивать нечего, GenBuilder упал),
+            # а сохранить зоны и запустить расчёт оценок стоит в любом из этих случаев.
+            async for event in self._emit_published(run, token, options):
                 yield event
         except HTTPException as exc:
             run.failure = exc
@@ -210,6 +221,40 @@ class PipelineService:
             yield {"type": "file", **descriptor, "source_service": descriptor.get("source_service", "genbuilder")}
 
     # ------------------------------------------------------------------ внутренности
+
+    async def _emit_published(
+        self,
+        run: PipelineRun,
+        token: str,
+        options: PipelineOptionsDTO,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Сохранение результата под сервисной учёткой и объявление в брокер.
+
+        Не фатально: сгенерированные зоны и застройка уже у пользователя, и потерять
+        их из-за недоступного Urban API было бы хуже, чем остаться без оценок.
+        """
+        if self._publisher is None or not options.publish or run.zones is None or run.selection is None:
+            return
+
+        yield events.progress(events.STAGE_PUBLISH)
+        try:
+            published = await self._publisher.publish(
+                source_scenario_id=run.scenario_id,
+                user_token=token,
+                profile_name=run.selection.profile_name,
+                year=datetime.now(timezone.utc).year,
+                zones=run.zones,
+                buildings=run.buildings,
+            )
+        except HTTPException as exc:
+            message = "Сценарий не сохранён в Urban API — оценки по нему не посчитаются."
+            run.warnings.append(message)
+            logger.warning("Публикация сценария {} не удалась: {}", run.scenario_id, exc.detail)
+            yield events.warning(events.STAGE_PUBLISH, str(exc.detail)[:500], message)
+            return
+
+        run.published = published.as_dict()
+        yield events.scenario_published(run.published)
 
     async def _emit_territory_indicators(self, run: PipelineRun, token: str) -> AsyncIterator[dict[str, Any]]:
         overview, error = await self.territory_indicators(run.scenario_id, token)

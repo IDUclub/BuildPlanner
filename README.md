@@ -14,6 +14,7 @@
 | 3 | `GET /default/func_ratio` → `POST /run_func_generation` → зоны и дороги | GenPlanner |
 | 4 | Зоны → блоки таксономии GenBuilder + `targets_by_zone` | здесь |
 | 5 | `POST /generate/by_territory` → застройка | GenBuilder |
+| 6 | Сценарий под сервисной учёткой + сообщение в брокер → расчёт оценок | Urban API |
 
 Индикаторы семейства 284 (286 бизнес-кластер, 287 промзона, 288 логистика) в выборе **не участвуют** —
 они измеряются в баллах и несравнимы с безразмерными 271–280.
@@ -52,13 +53,15 @@ make test     # pytest
 
 ## События SSE
 
-Словарь совпадает с GenPlanner и GenBuilder, плюс три своих — `indicators`,
-`territory_indicators` и `profile_selected`:
+Словарь совпадает с GenPlanner и GenBuilder, плюс четыре своих — `indicators`,
+`territory_indicators`, `profile_selected` и `scenario_published`:
 
 `chat_created` · `token` · `progress` · **`indicators`** · **`territory_indicators`** ·
-**`profile_selected`** · `zones` · `roads` · `result` · `file` · `warning` · `error` · `done`
+**`profile_selected`** · `zones` · `roads` · `result` · **`scenario_published`** ·
+`file` · `warning` · `error` · `done`
 
-Стадии `progress`: `fetch_indicators` → `select_profile` → `genplanner` → `map_zones` → `genbuilder` → `assemble`.
+Стадии `progress`: `fetch_indicators` → `select_profile` → `genplanner` → `map_zones` →
+`genbuilder` → `assemble` → `publish_scenario`.
 
 HTTP-статус потока всегда `200`: фатальная ошибка приходит событием `error` внутри потока.
 Если GenBuilder упал, зоны всё равно уже отданы — это полезный частичный результат, а не провал.
@@ -67,9 +70,10 @@ HTTP-статус потока всегда `200`: фатальная ошибк
 
 ```
 app/
-  clients/            urban_api · genplanner · genbuilder
+  clients/            urban_api · urban_scenario_writer · genplanner · genbuilder
   common/             auth · chat_storage · llm · api_handlers · constants · exceptions · logging
-  pipeline/           profile_selector · zone_mapper · targets_policy · pipeline_service · events
+  pipeline/           profile_selector · zone_mapper · targets_policy · pipeline_service ·
+                      indicators_view · scenario_publisher · events
   chat/               chat_service · agent/prompts
   system/             health · logs
 ```
@@ -174,6 +178,43 @@ Polygon/MultiPolygon. `properties.floors_group` на блоке перекрыв
 Перебить расчёт всё ещё можно точечно — абсолютным `targets_overrides.residential.residents`;
 это ручной аварийный выход, а не обычный путь. Итоговые опции прогона сохраняются
 в `metadata` ответного сообщения чата, чтобы переопределения пережили перезагрузку.
+
+## Публикация сценария и запуск оценок
+
+Оценки считают сторонние сервисы, подписанные на Kafka. Своего продюсера сервис
+не держит: у Urban API есть HTTP-фасад над брокером (`/api/broker/...`) — обычный
+POST, которым мы и пользуемся.
+
+Порядок в `ScenarioPublisher` обязателен и не переставляется:
+
+| | Действие | Ручка |
+|---|---|---|
+| 1 | проект-контейнер сервисной учётки (один на исходный проект) | `POST /api/v1/projects?user_id=…` |
+| 2 | копия исходного сценария в этот проект | `POST /api/v1/scenarios/{id}` |
+| 3 | зоны GenPlanner — одним запросом, ручка принимает массив | `POST /scenarios/{id}/functional_zones` |
+| 4 | здания GenBuilder — по два запроса на здание | `POST /scenarios/{id}/physical_objects` → `/buildings` |
+| 5 | объявление в брокер | `POST /api/broker/scenario_events/…` |
+
+Сообщения уходят **последними**: сервисы оценок по ним идут читать сценарий, и опередить
+запись данных нельзя — они посчитают пустоту. Пустой сценарий не анонсируется вовсе.
+
+**Почему сервисная учётка.** Владельца можно задать ровно в одном месте API —
+`POST /api/v1/projects?user_id=...`; у `Copy Scenario` его нет, сценарий наследует проект,
+а проект — своего хозяина. Поэтому генерация складывается в проект сервисного аккаунта
+и в проекте пользователя не появляется. Сам `user_id` не настраивается: он берётся из
+claim `sub` того же токена, которым мы пишем, — иначе учётка и её секрет могли бы разъехаться.
+
+Исходный проект читается токеном пользователя (свой проект видит только он), пишется —
+сервисным. Это единственное место, где в одном действии участвуют оба токена.
+
+Публикация не фатальна: если Urban API недоступен или прав не хватило, прогон отдаёт
+`warning` со стадией `publish_scenario`, а зоны и застройка остаются у пользователя.
+Выключается на прогон — `publish: false` в опциях, глобально — `PUBLISH_TO_URBAN=false`.
+
+`functional_zone_type_id` — пятое пространство идентификаторов в пайплайне, и единственное,
+которое не описано константами: справочник `GET /api/v1/functional_zones_types` живёт на
+стенде. Имена сверяются мягко (регистр, `ё`, `zone_nickname`); зона, которой нет в справочнике,
+пропускается и попадает в `unknown_zone_names`, а не пишется наугад.
 
 ## Чат: ChatStorage и vLLM
 

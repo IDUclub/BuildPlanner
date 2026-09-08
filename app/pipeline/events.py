@@ -1,8 +1,8 @@
 """Словарь SSE-событий.
 
 Совпадает со словарём GenPlanner и GenBuilder — фронтенд, умеющий читать их потоки,
-читает и этот. Своих событий три: `indicators`, `territory_indicators` и `profile_selected`
-(ADR-0001, D5).
+читает и этот. Своих событий четыре: `indicators`, `territory_indicators`,
+`profile_selected` и `scenario_published` (ADR-0001, D5).
 Каждое событие — словарь с ключом `type`, который контроллер превращает в имя SSE-события.
 """
 
@@ -14,6 +14,7 @@ STAGE_GENPLANNER = "genplanner"
 STAGE_MAP_ZONES = "map_zones"
 STAGE_GENBUILDER = "genbuilder"
 STAGE_ASSEMBLE = "assemble"
+STAGE_PUBLISH = "publish_scenario"
 
 STAGE_TITLES: dict[str, str] = {
     STAGE_FETCH_INDICATORS: "Читаю показатели сценария",
@@ -22,6 +23,7 @@ STAGE_TITLES: dict[str, str] = {
     STAGE_MAP_ZONES: "Готовлю блоки для застройки",
     STAGE_GENBUILDER: "Расставляю застройку",
     STAGE_ASSEMBLE: "Собираю результат",
+    STAGE_PUBLISH: "Сохраняю сценарий для расчёта оценок",
 }
 
 
@@ -56,6 +58,15 @@ def roads(content: dict[str, Any]) -> dict[str, Any]:
 
 def result(content: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
     return {"type": "result", "content": content, "summary": summary}
+
+
+def scenario_published(published: dict[str, Any]) -> dict[str, Any]:
+    """Сценарий записан в Urban API и о нём объявлено в брокер.
+
+    Отсюда начинается счёт оценок: сервисы, подписанные на `urban.events`,
+    берут сценарий по этому `scenario_id`.
+    """
+    return {"type": "scenario_published", **published}
 
 
 def token(content: str) -> dict[str, Any]:

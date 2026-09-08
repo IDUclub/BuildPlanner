@@ -68,16 +68,36 @@ class UrbanApiClient:
 
     async def get_project_id(self, scenario_id: int, token: str) -> int:
         """`Scenario.project.project_id` — GenPlanner требует его отдельным параметром."""
+        project_id, _ = await self.get_project_ref(scenario_id, token)
+        return project_id
+
+    async def get_project_ref(self, scenario_id: int, token: str) -> tuple[int, int | None]:
+        """`project_id` и регион проекта — из одного ответа, чтобы не ходить дважды.
+
+        Регион (`project.region.id`) нужен только публикации: `ProjectPost.territory_id`
+        подписан как «project region identifier».
+        """
         scenario = await self.get_scenario(scenario_id, token)
-        project_id = ((scenario or {}).get("project") or {}).get("project_id")
+        project = (scenario or {}).get("project") or {}
+        project_id = project.get("project_id")
         if not isinstance(project_id, int) or isinstance(project_id, bool):
             raise http_exception(
                 404,
                 "У сценария не удалось определить проект",
                 _input={"scenario_id": scenario_id},
-                _detail={"project": (scenario or {}).get("project")},
+                _detail={"project": project},
             )
-        return project_id
+        region_id = (project.get("region") or {}).get("id")
+        return project_id, region_id if isinstance(region_id, int) else None
+
+    async def get_project_geometry(self, project_id: int, token: str) -> dict[str, Any] | None:
+        """Граница проекта — её же получает проект-контейнер сервисной учётки."""
+        territory = await self._api.get(
+            f"/api/v1/projects/{project_id}/territory",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        geometry = (territory or {}).get("geometry")
+        return geometry if isinstance(geometry, dict) else None
 
     @staticmethod
     def latest_rows_by_indicator(

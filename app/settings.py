@@ -22,11 +22,17 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.2
     llm_timeout_seconds: int = 900
 
-    # Keycloak service account (нужен только для ChatStorage)
+    # Keycloak service account: под ним ходим в ChatStorage и пишем сценарии в Urban API
     keycloak_url: str = ""
     keycloak_realm: str = "IDU"
     keycloak_client_id: str = "buildplanner"
     keycloak_client_secret: str = ""
+
+    # публикация результата в Urban API
+    publish_to_urban: bool = True
+    service_project_prefix: str = "BuildPlanner"
+    publish_zone_source: str = "BuildPlanner"
+    publish_max_concurrency: int = 8
 
     # таймауты и лимиты
     urban_api_timeout_seconds: int = 60
@@ -43,3 +49,17 @@ class Settings(BaseSettings):
     @property
     def llm_enabled(self) -> bool:
         return bool(self.llm_api and self.llm_model)
+
+    @property
+    def service_account_enabled(self) -> bool:
+        return bool(self.keycloak_url and self.keycloak_client_secret)
+
+    @property
+    def urban_write_enabled(self) -> bool:
+        """Писать в Urban API можно только под сервисной учёткой.
+
+        Токен пользователя тут не годится: сгенерированный сценарий не должен
+        оказаться в его проекте — за это отвечает владелец, а владельца задаёт
+        только `POST /api/v1/projects?user_id=...`.
+        """
+        return self.publish_to_urban and self.service_account_enabled

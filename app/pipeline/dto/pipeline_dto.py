@@ -28,6 +28,10 @@ class PipelineOptionsDTO(BaseModel):
         default=False,
         description="Остановиться после зон GenPlanner, не вызывая GenBuilder",
     )
+    publish: bool = Field(
+        default=True,
+        description="Сохранить результат в Urban API под сервисной учёткой и запустить расчёт оценок",
+    )
     test: bool = Field(default=False, description="Использовать тестовый контур Urban API в GenPlanner")
 
     @field_validator("profile_id")
