@@ -1,7 +1,8 @@
 """Словарь SSE-событий.
 
 Совпадает со словарём GenPlanner и GenBuilder — фронтенд, умеющий читать их потоки,
-читает и этот. Своих событий два: `indicators` и `profile_selected` (ADR-0001, D5).
+читает и этот. Своих событий три: `indicators`, `territory_indicators` и `profile_selected`
+(ADR-0001, D5).
 Каждое событие — словарь с ключом `type`, который контроллер превращает в имя SSE-события.
 """
 
@@ -30,6 +31,15 @@ def progress(stage: str, content: str | None = None) -> dict[str, Any]:
 
 def indicators(values: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "indicators", "values": values}
+
+
+def territory_indicators(overview: dict[str, Any]) -> dict[str, Any]:
+    """Показатели проекта целиком: короткая сводка и полная таблица по разделам.
+
+    Отдельное событие, а не часть `indicators`: там — только те десять, по которым
+    выбирается профиль, и сравнивать их с численностью населения нельзя.
+    """
+    return {"type": "territory_indicators", **overview}
 
 
 def profile_selected(selection: dict[str, Any]) -> dict[str, Any]:

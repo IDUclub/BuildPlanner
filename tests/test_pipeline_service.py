@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from app.clients.urban_api_client import UrbanApiClient
 from app.common.constants.pipeline_constants import SELECTION_INDICATOR_IDS
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.pipeline_service import PipelineService
@@ -49,22 +50,30 @@ ZONES = {
 
 
 class FakeUrban:
-    def __init__(self, values: list[dict[str, Any]] | None = None):
+    def __init__(self, values: list[dict[str, Any]] | None = None, groups_fail: bool = False):
         self.values = INDICATOR_VALUES if values is None else values
-        self.requested_ids: Any = None
+        self.groups_fail = groups_fail
+        self.requested_ids: list[Any] = []
 
     async def get_scenario_indicators(self, scenario_id: int, token: str, indicator_ids=None) -> list[dict[str, Any]]:
-        self.requested_ids = indicator_ids
+        self.requested_ids.append(indicator_ids)
         return self.values
+
+    async def get_indicator_groups(self, token: str) -> list[dict[str, Any]]:
+        if self.groups_fail:
+            raise RuntimeError("справочник недоступен")
+        return [{"name": "demogrphy", "indicators": [{"indicator_id": 271}]}]
 
     async def get_project_id(self, scenario_id: int, token: str) -> int:
         return 120
 
     @staticmethod
     def latest_values_by_indicator(raw_values, indicator_ids):
-        from app.clients.urban_api_client import UrbanApiClient
-
         return UrbanApiClient.latest_values_by_indicator(raw_values, indicator_ids)
+
+    @staticmethod
+    def latest_rows_by_indicator(raw_values, indicator_ids=None):
+        return UrbanApiClient.latest_rows_by_indicator(raw_values, indicator_ids)
 
 
 class FakeGenPlanner:
@@ -197,11 +206,40 @@ async def test_skip_generation_stops_after_zones():
 
 @pytest.mark.asyncio
 async def test_indicators_are_filtered_on_the_urban_api_side():
-    """У сценария сотни значений, включая гексагональные — тянем только нужные десять."""
+    """У сценария сотни значений, включая гексагональные — для выбора тянем только десять."""
     urban = FakeUrban()
     service = PipelineService(urban, FakeGenPlanner(), FakeGenBuilder())
     await collect(service)
-    assert urban.requested_ids == SELECTION_INDICATOR_IDS
+    assert urban.requested_ids[0] == SELECTION_INDICATOR_IDS
+
+
+@pytest.mark.asyncio
+async def test_territory_indicators_are_a_separate_unfiltered_request():
+    """Витрина показывает всё, что есть у сценария, а выбор профиля остаётся узким."""
+    urban = FakeUrban()
+    service = PipelineService(urban, FakeGenPlanner(), FakeGenBuilder())
+    events = await collect(service)
+    assert urban.requested_ids == [SELECTION_INDICATOR_IDS, None]
+    overview = next(event for event in events if event["type"] == "territory_indicators")
+    assert overview["total"] == 3
+    assert overview["sections"][0]["title"] == "Демография"
+
+
+@pytest.mark.asyncio
+async def test_territory_indicators_come_before_the_selected_profile():
+    """Сначала показываем, что за территория, потом — что на ней решили строить."""
+    types = [event["type"] for event in await collect(build_service())]
+    assert types.index("territory_indicators") < types.index("profile_selected")
+
+
+@pytest.mark.asyncio
+async def test_broken_indicator_catalogue_does_not_fail_the_run():
+    """Витрина справочная: без неё прогон обязан дойти до застройки."""
+    service = PipelineService(FakeUrban(groups_fail=True), FakeGenPlanner(), FakeGenBuilder())
+    types = [event["type"] for event in await collect(service)]
+    assert "territory_indicators" not in types
+    assert "result" in types
+    assert "error" not in types
 
 
 @pytest.mark.asyncio

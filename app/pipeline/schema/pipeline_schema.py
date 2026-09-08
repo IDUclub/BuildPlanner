@@ -22,6 +22,10 @@ class PipelineResultSchema(BaseModel):
 
     scenario_id: int
     profile: ProfileSelectionSchema
+    indicators_overview: dict[str, Any] | None = Field(
+        default=None,
+        description="Показатели проекта: `highlights` — краткая сводка, `sections` — таблица по разделам",
+    )
     zones: dict[str, Any]
     roads: dict[str, Any] | None = None
     buildings: dict[str, Any] | None = None

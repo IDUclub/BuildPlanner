@@ -162,6 +162,77 @@ VOLUME_TARGET_BY_ZONE: Final[dict[str, tuple[str, ...]]] = {
     "special": ("coverage_area",),
 }
 
+# --- 5. Витрина показателей сценария --------------------------------------------------------
+
+# Названия и единицы Urban API отдаёт сам (`indicator.name_full`, `measurement_unit`),
+# поэтому своей таблицы показателей здесь нет — только порядок и заголовки разделов.
+
+# Короткая сводка «паспорт территории»: с чего планировщик начинает смотреть на проект.
+# Порядок важен — в таком виде показатели уходят в таблицу ответа.
+HIGHLIGHT_INDICATOR_IDS: Final[tuple[int, ...]] = (
+    1,  # Численность населения
+    37,  # Плотность населения
+    4,  # Площадь территории
+    16,  # Степень урбанизации территории
+    24,  # Процент земель населенных пунктов
+    43,  # Средний возраст населения
+    60,  # Плотность улично-дорожной сети
+    25,  # Средняя оценка индекса качества городской среды
+)
+
+# Группы приходят слагами (`/api/v1/indicators_groups`), в том числе с опечатками вроде
+# `demogrphy`. Незнакомый слаг показывается как есть — новая группа не ломает вывод.
+INDICATOR_GROUP_TITLES: Final[dict[str, str]] = {
+    "demogrphy": "Демография",
+    "settelment": "Расселение",
+    "economy": "Экономика",
+    "transport": "Транспорт",
+    "engineering": "Инженерная инфраструктура",
+    "nature": "Природа и экология",
+    "soc_edu": "Образование",
+    "soc_health": "Здравоохранение",
+    "soc_safe": "Безопасность",
+    "soc_help": "Социальная помощь",
+    "culture": "Культура и досуг",
+    "sport": "Спорт",
+    "tourism": "Туризм и общепит",
+    "service": "Услуги и сервис",
+    "base": "Базовое обслуживание",
+    "profiles": "Профиль территории",
+    "regional": "Региональные",
+    "common": "Общие",
+    "mandatory": "Обязательные",
+}
+
+# Один индикатор лежит сразу в нескольких группах (например, 12 — и в `common`, и в `regional`,
+# и в `settelment`). В таблице он должен встретиться один раз, поэтому раздел выбирается
+# по этому порядку: тематические группы вперёд, сборные — в конец.
+INDICATOR_GROUP_ORDER: Final[tuple[str, ...]] = (
+    "demogrphy",
+    "settelment",
+    "economy",
+    "transport",
+    "engineering",
+    "nature",
+    "soc_edu",
+    "soc_health",
+    "soc_safe",
+    "soc_help",
+    "culture",
+    "sport",
+    "tourism",
+    "service",
+    "base",
+    "profiles",
+    "regional",
+    "common",
+    "mandatory",
+)
+
+# Показатели вне групп — в том числе семейство 269, по которому выбирается профиль.
+UNGROUPED_SECTION: Final[str] = "other"
+UNGROUPED_SECTION_TITLE: Final[str] = "Прочие показатели"
+
 # Ключи свойств, под которыми GenPlanner отдаёт территориальную зону в feature.
 ZONE_ID_PROPERTY_KEYS: Final[tuple[str, ...]] = ("territory_zone", "zone_id", "profile_id")
 ZONE_NAME_PROPERTY_KEYS: Final[tuple[str, ...]] = ("territory_zone_name", "zone_name", "Территориальная зона")

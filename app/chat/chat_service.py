@@ -17,6 +17,7 @@ from app.common.chat_storage.chat_storage_client import ChatStorageClient
 from app.common.llm.vllm_chat_client import VLLMChatClient, VLLMChatError
 from app.pipeline import events
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
+from app.pipeline.indicators_view import highlights_table
 from app.pipeline.pipeline_service import PipelineService
 
 TOKEN_CHUNK = 24
@@ -77,6 +78,12 @@ class ChatService:
         summary_lines: list[str] = [reply]
 
         async for event in self._pipeline.stream(scenario_id, token, options):
+            if event["type"] == "territory_indicators":
+                # В текст ответа идёт только короткая сводка: полная таблица уехала
+                # событием, её рисует фронтенд, и дублировать её в сообщение незачем.
+                table = highlights_table(event.get("highlights") or [])
+                if table:
+                    summary_lines.append(f"Показатели территории:\n{table}")
             if event["type"] == "profile_selected":
                 summary_lines.append(str(event.get("reason", "")))
             if event["type"] == "warning" and event.get("message"):

@@ -10,6 +10,7 @@ from app.common.constants.pipeline_constants import (
     PROFILE_TARGETS,
     SELECTION_INDICATOR_IDS,
 )
+from app.common.exceptions.http_exception import http_exception
 from app.dependencies import get_pipeline_service, get_settings
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.pipeline_service import PipelineService
@@ -51,6 +52,27 @@ async def run_pipeline_stream(
         sse_stream(events_iterator, tail=lambda: ServerSentEvent(event="done", data="{}")),
         ping=settings.sse_keepalive_seconds,
     )
+
+
+@router.get(
+    "/scenarios/{scenario_id}/indicators",
+    summary="Показатели проекта таблицей, без генерации",
+)
+async def scenario_indicators(
+    scenario_id: int,
+    token: str = Depends(verify_bearer_token),
+    service: PipelineService = Depends(get_pipeline_service),
+) -> dict[str, object]:
+    """`highlights` — краткая сводка по территории, `sections` — всё остальное по разделам."""
+    overview, error = await service.territory_indicators(scenario_id, token)
+    if overview is None:
+        raise http_exception(
+            502,
+            "Не удалось получить показатели сценария",
+            _input={"scenario_id": scenario_id},
+            _detail={"stage": "fetch_indicators", "error": error},
+        )
+    return overview
 
 
 @router.get("/reference/indicators", summary="Индикаторы, участвующие в выборе профиля")

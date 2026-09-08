@@ -21,6 +21,7 @@ from app.common.constants.pipeline_constants import PROFILE_NAMES, SELECTION_IND
 from app.common.exceptions.http_exception import http_exception
 from app.pipeline import events
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
+from app.pipeline.indicators_view import build_overview
 from app.pipeline.profile_selector import NoIndicatorValuesError, ProfileSelection, select_profile
 from app.pipeline.schema.pipeline_schema import PipelineResultSchema, ProfileSelectionSchema
 from app.pipeline.targets_policy import build_targets_by_zone, to_genbuilder_targets, zones_without_volume_target
@@ -33,6 +34,7 @@ class PipelineRun:
 
     scenario_id: int
     selection: ProfileSelection | None = None
+    indicators_overview: dict[str, Any] | None = None
     zones: dict[str, Any] | None = None
     roads: dict[str, Any] | None = None
     buildings: dict[str, Any] | None = None
@@ -69,6 +71,7 @@ class PipelineService:
         return PipelineResultSchema(
             scenario_id=scenario_id,
             profile=ProfileSelectionSchema(**run.selection.as_dict()),
+            indicators_overview=run.indicators_overview,
             zones=run.zones,
             roads=run.roads,
             buildings=run.buildings,
@@ -95,6 +98,22 @@ class PipelineService:
             logger.error("Пайплайн сценария {} упал: {}", scenario_id, detail)
             yield events.error(stage=detail.get("stage", "pipeline"), detail=json.dumps(detail, ensure_ascii=False))
 
+    async def territory_indicators(self, scenario_id: int, token: str) -> tuple[dict[str, Any] | None, str | None]:
+        """Витрина показателей проекта. Никогда не роняет прогон — это справочная часть ответа.
+
+        Запрос отдельный от выбора профиля: тот тянет ровно десять индикаторов и обязан быть
+        быстрым и предсказуемым, а этот забирает у сценария всё, что есть.
+        """
+        try:
+            raw_values = await self._urban.get_scenario_indicators(scenario_id, token)
+            rows = self._urban.latest_rows_by_indicator(raw_values)
+            logger.info("У сценария {}: {} значений, {} показателей", scenario_id, len(raw_values), len(rows))
+            groups = await self._urban.get_indicator_groups(token)
+            return build_overview(raw_values, groups, rows), None
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("Не удалось собрать показатели сценария {}: {}", scenario_id, exc)
+            return None, str(exc)[:500]
+
     # ------------------------------------------------------------------ шаги пайплайна
 
     async def _execute(
@@ -106,6 +125,10 @@ class PipelineService:
         selection = await self._resolve_profile(run, token, options)
         yield events.progress(events.STAGE_FETCH_INDICATORS)
         yield events.indicators([entry.as_dict() for entry in selection.scoreboard])
+
+        async for event in self._emit_territory_indicators(run, token):
+            yield event
+
         yield events.progress(events.STAGE_SELECT_PROFILE, selection.reason)
         yield events.profile_selected(selection.as_dict())
 
@@ -187,6 +210,14 @@ class PipelineService:
             yield {"type": "file", **descriptor, "source_service": descriptor.get("source_service", "genbuilder")}
 
     # ------------------------------------------------------------------ внутренности
+
+    async def _emit_territory_indicators(self, run: PipelineRun, token: str) -> AsyncIterator[dict[str, Any]]:
+        overview, error = await self.territory_indicators(run.scenario_id, token)
+        run.indicators_overview = overview
+        if overview is not None:
+            yield events.territory_indicators(overview)
+        elif error:
+            yield events.warning(events.STAGE_FETCH_INDICATORS, error, "Показатели проекта недоступны.")
 
     async def _resolve_profile(
         self,

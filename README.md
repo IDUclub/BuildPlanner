@@ -42,6 +42,7 @@ make test     # pytest
 | `POST` | `/buildplanner/scenarios/{id}/run` | синхронный прогон, один JSON |
 | `POST` | `/buildplanner/scenarios/{id}/run/stream` | тот же прогон потоком, без чата |
 | `POST` | `/buildplanner/scenarios/{id}/chat/stream` | диалоговый прогон (SSE) |
+| `GET` | `/buildplanner/scenarios/{id}/indicators` | показатели проекта таблицей, без генерации |
 | `GET` | `/buildplanner/reference/indicators` | какие индикаторы участвуют в выборе |
 | `GET` | `/buildplanner/reference/profiles` | профили и их застройка в GenBuilder |
 | `GET` | `/buildplanner/health`, `/buildplanner/logs/log_file` | служебные |
@@ -51,10 +52,11 @@ make test     # pytest
 
 ## События SSE
 
-Словарь совпадает с GenPlanner и GenBuilder, плюс два своих — `indicators` и `profile_selected`:
+Словарь совпадает с GenPlanner и GenBuilder, плюс три своих — `indicators`,
+`territory_indicators` и `profile_selected`:
 
-`chat_created` · `token` · `progress` · **`indicators`** · **`profile_selected`** · `zones` · `roads` ·
-`result` · `file` · `warning` · `error` · `done`
+`chat_created` · `token` · `progress` · **`indicators`** · **`territory_indicators`** ·
+**`profile_selected`** · `zones` · `roads` · `result` · `file` · `warning` · `error` · `done`
 
 Стадии `progress`: `fetch_indicators` → `select_profile` → `genplanner` → `map_zones` → `genbuilder` → `assemble`.
 
@@ -89,6 +91,35 @@ app/
 Отсюда правило выбора в `UrbanApiClient.latest_values_by_indicator`: сначала территориальное
 значение (`hexagon_id` пуст), среди равных — самое свежее. Иначе можно сравнить агрегат по
 территории у одного индикатора с одной ячейкой у другого и выбрать не тот профиль.
+
+## Витрина показателей
+
+Кроме десяти индикаторов выбора сервис показывает и остальные показатели проекта —
+событием `territory_indicators` и ручкой `GET /scenarios/{id}/indicators`. Два уровня
+в одном ответе, чтобы фронтенд сам решал, сколько показать:
+
+- `highlights` — «паспорт территории», 8 показателей в фиксированном порядке
+  (численность, плотность, площадь, урбанизация, % земель НП, средний возраст,
+  плотность УДС, ИКГС). Именно они уходят Markdown-таблицей в текст ответа чата;
+- `sections` — всё остальное, разложенное по разделам справочника
+  `GET /api/v1/indicators_groups` (Демография, Транспорт, Экономика…), строки внутри
+  раздела отсортированы по `list_label` естественным порядком (`1.2.10` после `1.2.9`).
+
+Названия, единицы и нумерацию отдаёт сам Urban API (`indicator.name_full`,
+`measurement_unit`, `list_label`) — своего справочника показателей у сервиса нет,
+он бы неизбежно разошёлся со стендом. Наше только два списка в
+[`pipeline_constants.py`](app/common/constants/pipeline_constants.py):
+порядок «паспорта» и русские заголовки разделов.
+
+Показатель состоит сразу в нескольких группах (`Численность населения` — и в `regional`,
+и в `demogrphy`), поэтому раздел выбирается по `INDICATOR_GROUP_ORDER`: тематические
+группы вперёд, сборные (`regional`, `common`) в конец. Показатели вне групп — включая
+семейство 269 — попадают в «Прочие показатели».
+
+Запрос отдельный от выбора профиля и **нефатальный**: выбор тянет ровно десять
+индикаторов и обязан быть предсказуемым, витрина забирает у сценария всё. Если она
+не собралась, прогон продолжается, а наверх уходит `warning`. Справочник групп
+кэшируется в памяти на час.
 
 ## Запрос в GenPlanner
 
