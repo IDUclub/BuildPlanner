@@ -212,16 +212,18 @@ class PipelineService:
         selection: ProfileSelection,
     ) -> dict[str, Any]:
         balance = options.territory_balance or await self._genplanner.get_default_func_ratio(selection.profile_id)
-        cache_key = self._cache_key(run.scenario_id, selection.profile_id, balance)
+        cache_key = self._cache_key(run.scenario_id, selection.profile_id, balance, options)
 
         cached = self._zones_cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < self._cache_ttl:
             logger.info("Зоны сценария {} взяты из кэша", run.scenario_id)
             return cached[1]
 
+        project_id = options.project_id or await self._urban.get_project_id(run.scenario_id, token)
         generated = await self._genplanner.run_func_generation(
             token=token,
             scenario_id=run.scenario_id,
+            project_id=project_id,
             territory_balance=balance,
             test=options.test,
         )
@@ -229,8 +231,17 @@ class PipelineService:
         return generated
 
     @staticmethod
-    def _cache_key(scenario_id: int, profile_id: int, balance: dict[str, float]) -> str:
-        payload = json.dumps({"balance": balance}, sort_keys=True).encode("utf-8")
+    def _cache_key(
+        scenario_id: int,
+        profile_id: int,
+        balance: dict[str, float],
+        options: PipelineOptionsDTO,
+    ) -> str:
+        """Всё, что меняет запрос к GenPlanner, обязано попасть в ключ — иначе отдадим чужие зоны."""
+        payload = json.dumps(
+            {"balance": balance, "project_id": options.project_id, "test": options.test},
+            sort_keys=True,
+        ).encode("utf-8")
         return f"{scenario_id}:{profile_id}:{hashlib.sha256(payload).hexdigest()[:16]}"
 
     @staticmethod

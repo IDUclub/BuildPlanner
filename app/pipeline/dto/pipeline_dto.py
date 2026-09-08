@@ -12,6 +12,10 @@ class PipelineOptionsDTO(BaseModel):
         default=None,
         description="Переопределить профиль вместо выбора по индикаторам",
     )
+    project_id: int | None = Field(
+        default=None,
+        description="Проект сценария; по умолчанию берётся из самого сценария в Urban API",
+    )
     territory_balance: dict[str, float] | None = Field(
         default=None,
         description="Переопределить баланс территориальных зон для GenPlanner",

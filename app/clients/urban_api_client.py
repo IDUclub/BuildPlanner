@@ -3,6 +3,7 @@ from typing import Any, Iterable
 from loguru import logger
 
 from app.common.api_handlers.json_api_handler import AsyncJsonApiHandler
+from app.common.exceptions.http_exception import http_exception
 
 
 class UrbanApiClient:
@@ -42,6 +43,19 @@ class UrbanApiClient:
             f"/api/v1/scenarios/{scenario_id}",
             headers={"Authorization": f"Bearer {token}"},
         )
+
+    async def get_project_id(self, scenario_id: int, token: str) -> int:
+        """`Scenario.project.project_id` — GenPlanner требует его отдельным параметром."""
+        scenario = await self.get_scenario(scenario_id, token)
+        project_id = ((scenario or {}).get("project") or {}).get("project_id")
+        if not isinstance(project_id, int) or isinstance(project_id, bool):
+            raise http_exception(
+                404,
+                "У сценария не удалось определить проект",
+                _input={"scenario_id": scenario_id},
+                _detail={"project": (scenario or {}).get("project")},
+            )
+        return project_id
 
     @staticmethod
     def latest_values_by_indicator(

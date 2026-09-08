@@ -90,7 +90,15 @@ app/
 значение (`hexagon_id` пуст), среди равных — самое свежее. Иначе можно сравнить агрегат по
 территории у одного индикатора с одной ячейкой у другого и выбрать не тот профиль.
 
-## Что ещё не подтверждено
+## Запрос в GenPlanner
 
-Имена полей запроса `POST /genplanner/run_func_generation` — сейчас предполагаем
-`{scenario_id, territory_balance, test}`, баланс берём из `GET /default/func_ratio?zone={profile_id}`.
+`POST /genplanner/run_func_generation` объявлен как `Annotated[GenPlannerFuncZonesDTO, Depends(...)]`,
+а не как тело запроса, поэтому FastAPI раскладывает поля DTO по двум местам:
+
+| Где | Поля |
+|---|---|
+| query | `project_id`, `scenario_id`, `roads_extend_distance`, `elevation_angle`, `ignore_default_relations`, `test` |
+| body | `territory_balance` (обязательно), `fix_zones`, `min_block_area`, `functional_zones`, `neighbour_pairs`, `forbidden_pairs` |
+
+`project_id` обязателен, поэтому сервис сначала достаёт его из `GET /api/v1/scenarios/{id}`
+(`scenario.project.project_id`); переопределяется полем `project_id` в опциях прогона.

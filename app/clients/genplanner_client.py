@@ -11,6 +11,10 @@ class GenPlannerClient:
     Профиль попадает в генерацию через баланс территориальных зон:
     `GET /default/func_ratio?zone={profile_id}` отдаёт дефолтное соотношение зон
     для профиля, оно же уходит в `run_func_generation` как `territory_balance`.
+
+    Форма запроса сверена с `GenPlannerFuncZonesDTO` (ветка master). Ручка объявлена
+    как `Annotated[DTO, Depends(DTO)]`, а не как тело запроса, поэтому FastAPI
+    раскладывает поля по двум местам: скаляры уходят в query, составные — в тело.
     """
 
     def __init__(self, handler: AsyncJsonApiHandler):
@@ -20,30 +24,40 @@ class GenPlannerClient:
         return await self._api.get(f"{GENPLANNER_PREFIX}/default/func_ratio", params={"zone": profile_id})
 
     async def get_zones_reference(self) -> list[dict[str, Any]]:
-        return await self._api.get(f"{GENPLANNER_PREFIX}/zones_reference")
+        """Путь двойной: роутер смонтирован с префиксом `/genplanner`, а сам путь — `/gen_planner/...`."""
+        return await self._api.get(f"{GENPLANNER_PREFIX}/gen_planner/zones_reference")
 
     async def run_func_generation(
         self,
         token: str,
         scenario_id: int,
+        project_id: int,
         territory_balance: dict[str, float],
-        project_id: int | None = None,
         test: bool = False,
-        extra: dict[str, Any] | None = None,
+        elevation_angle: int | None = None,
+        body_extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Возвращает `{zones: FeatureCollection, roads: FeatureCollection}`."""
-        payload: dict[str, Any] = {
+        """Возвращает `{zones: FeatureCollection, roads: FeatureCollection}`.
+
+        `project_id` в DTO обязателен: восстановление из сценария внутри GenPlanner
+        до кода не доходит — запрос без него отсекает валидация FastAPI.
+        """
+        params: dict[str, Any] = {
+            "project_id": project_id,
             "scenario_id": scenario_id,
-            "territory_balance": territory_balance,
-            "test": test,
+            "test": str(test).lower(),
         }
-        if project_id is not None:
-            payload["project_id"] = project_id
-        if extra:
-            payload.update(extra)
+        if elevation_angle is not None:
+            params["elevation_angle"] = elevation_angle
+
+        body: dict[str, Any] = {"territory_balance": territory_balance}
+        if body_extra:
+            body.update(body_extra)
+
         return await self._api.post(
             f"{GENPLANNER_PREFIX}/run_func_generation",
-            json_data=payload,
+            json_data=body,
+            params=params,
             headers={"Authorization": f"Bearer {token}"},
         )
 

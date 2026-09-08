@@ -40,6 +40,9 @@ class FakeUrban:
         self.requested_ids = indicator_ids
         return self.values
 
+    async def get_project_id(self, scenario_id: int, token: str) -> int:
+        return 120
+
     @staticmethod
     def latest_values_by_indicator(raw_values, indicator_ids):
         from app.clients.urban_api_client import UrbanApiClient
@@ -50,12 +53,14 @@ class FakeUrban:
 class FakeGenPlanner:
     def __init__(self):
         self.calls = 0
+        self.received: dict[str, Any] = {}
 
     async def get_default_func_ratio(self, profile_id: int) -> dict[str, float]:
         return {"13": 0.7, "2": 0.3}
 
     async def run_func_generation(self, **kwargs) -> dict[str, Any]:
         self.calls += 1
+        self.received = kwargs
         return {"zones": ZONES, "roads": {"type": "FeatureCollection", "features": []}}
 
 
@@ -139,6 +144,21 @@ async def test_indicators_are_filtered_on_the_urban_api_side():
     service = PipelineService(urban, FakeGenPlanner(), FakeGenBuilder())
     await collect(service)
     assert urban.requested_ids == SELECTION_INDICATOR_IDS
+
+
+@pytest.mark.asyncio
+async def test_project_id_is_resolved_from_the_scenario():
+    """`GenPlannerFuncZonesDTO.project_id` обязателен — без него ручка отдаёт 422."""
+    genplanner = FakeGenPlanner()
+    await collect(build_service(genplanner=genplanner))
+    assert genplanner.received["project_id"] == 120
+
+
+@pytest.mark.asyncio
+async def test_explicit_project_id_wins_over_lookup():
+    genplanner = FakeGenPlanner()
+    await collect(build_service(genplanner=genplanner), PipelineOptionsDTO(project_id=7))
+    assert genplanner.received["project_id"] == 7
 
 
 @pytest.mark.asyncio
