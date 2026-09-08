@@ -27,20 +27,6 @@ from app.pipeline.targets_policy import build_targets_by_zone, to_genbuilder_tar
 from app.pipeline.zone_mapper import map_zones_to_blocks
 
 
-def _with_requested_residents(options: PipelineOptionsDTO) -> dict[str, dict[str, Any]]:
-    """Число жителей с фронта — это абсолютная цель для жилой зоны.
-
-    Кладём его в overrides, где абсолютное значение и так побеждает расчёт по площади.
-    Точечный `targets_overrides["residential"]["residents"]` считается более конкретным
-    и остаётся сильнее.
-    """
-    overrides = {zone: dict(target) for zone, target in (options.targets_overrides or {}).items()}
-    if options.residents is not None:
-        residential = overrides.setdefault("residential", {})
-        residential.setdefault("residents", options.residents)
-    return overrides
-
-
 @dataclass
 class PipelineRun:
     """Состояние одного прогона: наполняется по ходу потока событий."""
@@ -161,11 +147,13 @@ class PipelineService:
             return
 
         # --- застройка
+        # Цели объёма считает политика: у пользователя их не спрашиваем, число жителей
+        # выводится из площади блоков и нормативного потолка плотности.
         run.targets_by_zone = build_targets_by_zone(
             selection.profile_id,
             mapping.zones_present,
             mapping.area_by_zone,
-            _with_requested_residents(options),
+            options.targets_overrides,
         )
         idle_zones = zones_without_volume_target(run.targets_by_zone)
         if idle_zones:

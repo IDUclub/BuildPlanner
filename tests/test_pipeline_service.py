@@ -142,29 +142,20 @@ async def test_residents_target_follows_the_block_area():
     assert genbuilder.received_targets["residents"]["residential"] == pytest.approx(expected, rel=0.02)
 
 
-@pytest.mark.asyncio
-async def test_requested_residents_win_over_the_area_estimate():
-    """Число с фронта — цель, а не подсказка."""
-    genbuilder = FakeGenBuilder()
-    await collect(build_service(genbuilder=genbuilder), PipelineOptionsDTO(residents=5000))
-    assert genbuilder.received_targets["residents"]["residential"] == 5000
+def test_residents_are_not_asked_for():
+    """Число жителей — расчётная величина, а не параметр прогона."""
+    assert "residents" not in PipelineOptionsDTO.model_fields
 
 
 @pytest.mark.asyncio
-async def test_targets_overrides_are_more_specific_than_the_residents_field():
+async def test_overrides_remain_the_manual_escape_hatch():
+    """Автоматический расчёт можно перебить точечно — этот путь остаётся."""
     genbuilder = FakeGenBuilder()
     await collect(
         build_service(genbuilder=genbuilder),
-        PipelineOptionsDTO(residents=5000, targets_overrides={"residential": {"residents": 7000}}),
+        PipelineOptionsDTO(targets_overrides={"residential": {"residents": 7000}}),
     )
     assert genbuilder.received_targets["residents"]["residential"] == 7000
-
-
-@pytest.mark.asyncio
-async def test_requested_residents_do_not_leak_into_other_zones():
-    genbuilder = FakeGenBuilder()
-    await collect(build_service(genbuilder=genbuilder), PipelineOptionsDTO(residents=5000))
-    assert "industrial" not in genbuilder.received_targets["residents"]
 
 
 @pytest.mark.asyncio

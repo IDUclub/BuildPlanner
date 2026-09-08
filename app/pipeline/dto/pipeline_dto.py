@@ -20,14 +20,6 @@ class PipelineOptionsDTO(BaseModel):
         default=None,
         description="Переопределить баланс территориальных зон для GenPlanner",
     )
-    residents: int | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Целевое число жителей для жилой зоны. Задано — считаем по нему; "
-            "не задано — по плотности и площади блоков"
-        ),
-    )
     targets_overrides: dict[str, dict[str, Any]] | None = Field(
         default=None,
         description="Точечные правки targets_by_zone: {зона GenBuilder: {параметр: значение}}",

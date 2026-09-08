@@ -75,8 +75,6 @@ class ChatService:
 
         options = self._merge_options(turn.options, draft.get("patch") or {})
         summary_lines: list[str] = [reply]
-        if options.residents is not None:
-            summary_lines.append(f"Целевое число жителей: {options.residents}.")
 
         async for event in self._pipeline.stream(scenario_id, token, options):
             if event["type"] == "profile_selected":
@@ -90,7 +88,7 @@ class ChatService:
             "assistant",
             "\n".join(filter(None, summary_lines)),
             user_id,
-            # Числа, названные пользователем, должны пережить перезагрузку чата:
+            # Ручные переопределения должны пережить перезагрузку чата:
             # из текста реплики их потом не восстановить надёжно.
             metadata={"options": options.model_dump(exclude_none=True)},
         )
