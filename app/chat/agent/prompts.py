@@ -26,6 +26,7 @@ SYSTEM_PROMPT = f"""Ты — помощник градостроителя в с
 
 В patch клади только то, что пользователь назвал явно:
 - profile_id — если он просит конкретный профиль («сделай под промышленность»);
+- residents — если названо число жителей («рассели 12 тысяч человек»), целым числом;
 - skip_generation — true, если нужны только зоны, без застройки;
 - targets_overrides — если названы конкретные этажность или плотность.
 
@@ -47,6 +48,7 @@ DRAFT_SCHEMA: dict = {
             "additionalProperties": False,
             "properties": {
                 "profile_id": {"type": ["integer", "null"], "enum": [*sorted(PROFILE_NAMES), None]},
+                "residents": {"type": ["integer", "null"], "minimum": 0},
                 "skip_generation": {"type": ["boolean", "null"]},
                 "targets_overrides": {"type": ["object", "null"]},
             },

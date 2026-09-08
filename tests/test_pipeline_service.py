@@ -143,6 +143,31 @@ async def test_residents_target_follows_the_block_area():
 
 
 @pytest.mark.asyncio
+async def test_requested_residents_win_over_the_area_estimate():
+    """Число с фронта — цель, а не подсказка."""
+    genbuilder = FakeGenBuilder()
+    await collect(build_service(genbuilder=genbuilder), PipelineOptionsDTO(residents=5000))
+    assert genbuilder.received_targets["residents"]["residential"] == 5000
+
+
+@pytest.mark.asyncio
+async def test_targets_overrides_are_more_specific_than_the_residents_field():
+    genbuilder = FakeGenBuilder()
+    await collect(
+        build_service(genbuilder=genbuilder),
+        PipelineOptionsDTO(residents=5000, targets_overrides={"residential": {"residents": 7000}}),
+    )
+    assert genbuilder.received_targets["residents"]["residential"] == 7000
+
+
+@pytest.mark.asyncio
+async def test_requested_residents_do_not_leak_into_other_zones():
+    genbuilder = FakeGenBuilder()
+    await collect(build_service(genbuilder=genbuilder), PipelineOptionsDTO(residents=5000))
+    assert "industrial" not in genbuilder.received_targets["residents"]
+
+
+@pytest.mark.asyncio
 async def test_blocks_without_geometry_warn_instead_of_inventing_a_target():
     genplanner = FakeGenPlanner()
     genplanner.zones = {

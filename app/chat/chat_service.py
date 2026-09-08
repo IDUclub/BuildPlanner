@@ -52,7 +52,10 @@ class ChatService:
             title = normalize_title(draft.get("title"), turn.user_query, scenario_id)
             try:
                 chat_id = await self._storage.create_chat(
-                    title, user_id, metadata={"scenario_id": scenario_id, "service": "buildplanner"}
+                    title,
+                    user_id,
+                    scenario_id=scenario_id,
+                    metadata={"service": "buildplanner"},
                 )
                 yield events.chat_created(chat_id, title)
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -72,6 +75,8 @@ class ChatService:
 
         options = self._merge_options(turn.options, draft.get("patch") or {})
         summary_lines: list[str] = [reply]
+        if options.residents is not None:
+            summary_lines.append(f"Целевое число жителей: {options.residents}.")
 
         async for event in self._pipeline.stream(scenario_id, token, options):
             if event["type"] == "profile_selected":
@@ -80,7 +85,15 @@ class ChatService:
                 summary_lines.append(str(event["message"]))
             yield event
 
-        message_id = await self._persist(chat_id, "assistant", "\n".join(filter(None, summary_lines)), user_id)
+        message_id = await self._persist(
+            chat_id,
+            "assistant",
+            "\n".join(filter(None, summary_lines)),
+            user_id,
+            # Числа, названные пользователем, должны пережить перезагрузку чата:
+            # из текста реплики их потом не восстановить надёжно.
+            metadata={"options": options.model_dump(exclude_none=True)},
+        )
         yield events.done(chat_id, message_id)
 
     # ------------------------------------------------------------------ внутренности
@@ -109,11 +122,20 @@ class ChatService:
                 merged[key] = value
         return PipelineOptionsDTO(**merged)
 
-    async def _persist(self, chat_id: str | None, role: str, text: str, user_id: str | None) -> str | None:
+    async def _persist(
+        self,
+        chat_id: str | None,
+        role: str,
+        text: str,
+        user_id: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str | None:
         if not (self._storage and chat_id and text):
             return None
         try:
-            return await self._storage.add_message(chat_id, role, [ChatStorageClient.text_part(text)], user_id)
+            return await self._storage.add_message(
+                chat_id, role, [ChatStorageClient.text_part(text)], user_id, metadata=metadata
+            )
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Не удалось сохранить сообщение в чат {}: {}", chat_id, exc)
             return None

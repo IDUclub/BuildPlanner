@@ -1,5 +1,7 @@
 from typing import Any
 
+from loguru import logger
+
 from app.common.api_handlers.json_api_handler import AsyncJsonApiHandler
 from app.common.auth.service_token import ServiceTokenProvider
 
@@ -11,6 +13,11 @@ class ChatStorageClient:
 
     Контракт тот же, что у GenPlanner и GenBuilder: сервисный токен + ``X-User-Id``,
     сообщения многочастные (``parts``), чтобы в историю ложились и текст, и ссылки на слои.
+
+    Тело ``create_chat`` — ``{title, scenario_id, project_id, metadata}``: сценарий и проект
+    лежат на верхнем уровне, а не в ``metadata``, иначе чат не привяжется к сценарию
+    и не найдётся в списке чатов проекта. ``metadata`` объявлена необнуляемой —
+    ``null`` отдаётся как 422, поэтому всегда шлём хотя бы ``{}``.
     """
 
     def __init__(self, handler: AsyncJsonApiHandler, token_provider: ServiceTokenProvider):
@@ -18,15 +25,30 @@ class ChatStorageClient:
         self._tokens = token_provider
 
     async def _headers(self, user_id: str | None) -> dict[str, str]:
+        """`X-User-Id` обязателен при сервисном токене: под ним ChatStorage хранит историю."""
         headers = {"Authorization": f"Bearer {await self._tokens.get_token()}"}
         if user_id:
-            headers["X-User-Id"] = user_id
+            headers["X-User-Id"] = str(user_id)
+        else:
+            logger.warning("Не удалось определить пользователя — ChatStorage отклонит запрос")
         return headers
 
-    async def create_chat(self, title: str, user_id: str | None, metadata: dict[str, Any] | None = None) -> str:
+    async def create_chat(
+        self,
+        title: str,
+        user_id: str | None,
+        scenario_id: int | str | None = None,
+        project_id: int | str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         response = await self._api.post(
             f"{CHAT_HISTORY_PREFIX}/create_chat",
-            json_data={"title": title, "metadata": metadata or {}},
+            json_data={
+                "title": title,
+                "scenario_id": scenario_id,
+                "project_id": project_id,
+                "metadata": metadata or {},
+            },
             headers=await self._headers(user_id),
         )
         return response["chat_id"]
