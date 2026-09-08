@@ -148,7 +148,10 @@ class PipelineService:
 
         # --- застройка
         run.targets_by_zone = build_targets_by_zone(
-            selection.profile_id, mapping.zones_present, options.targets_overrides
+            selection.profile_id,
+            mapping.zones_present,
+            mapping.area_by_zone,
+            options.targets_overrides,
         )
         idle_zones = zones_without_volume_target(run.targets_by_zone)
         if idle_zones:

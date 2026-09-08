@@ -22,11 +22,28 @@ def _value_row(indicator_id: int, value: float) -> dict[str, Any]:
 
 INDICATOR_VALUES = [_value_row(271, 0.2), _value_row(274, 0.9), _value_row(278, 0.4)]
 
+
+def _square(lon: float, lat: float, side: float = 0.01) -> dict[str, Any]:
+    """Квартал около Петербурга; площадь нужна, чтобы посчитать цели застройки."""
+    return {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [lon, lat],
+                [lon + side, lat],
+                [lon + side, lat + side],
+                [lon, lat + side],
+                [lon, lat],
+            ]
+        ],
+    }
+
+
 ZONES = {
     "type": "FeatureCollection",
     "features": [
-        {"type": "Feature", "geometry": None, "properties": {"territory_zone": 13}},
-        {"type": "Feature", "geometry": None, "properties": {"territory_zone": 2}},
+        {"type": "Feature", "geometry": _square(30.0, 60.0), "properties": {"territory_zone": 13}},
+        {"type": "Feature", "geometry": _square(30.02, 60.0), "properties": {"territory_zone": 2}},
     ],
 }
 
@@ -54,6 +71,7 @@ class FakeGenPlanner:
     def __init__(self):
         self.calls = 0
         self.received: dict[str, Any] = {}
+        self.zones = ZONES
 
     async def get_default_func_ratio(self, profile_id: int) -> dict[str, float]:
         return {"13": 0.7, "2": 0.3}
@@ -61,7 +79,7 @@ class FakeGenPlanner:
     async def run_func_generation(self, **kwargs) -> dict[str, Any]:
         self.calls += 1
         self.received = kwargs
-        return {"zones": ZONES, "roads": {"type": "FeatureCollection", "features": []}}
+        return {"zones": self.zones, "roads": {"type": "FeatureCollection", "features": []}}
 
 
 class FakeGenBuilder:
@@ -111,7 +129,29 @@ async def test_selected_profile_drives_targets():
     genbuilder = FakeGenBuilder()
     await collect(build_service(genbuilder=genbuilder))
     assert genbuilder.received_targets["floors_avg"]["residential"] == 16  # профиль 13
-    assert genbuilder.received_targets["residents"]["residential"] == 12000
+    assert genbuilder.received_targets["residents"]["residential"] > 0
+
+
+@pytest.mark.asyncio
+async def test_residents_target_follows_the_block_area():
+    """Цель считается от площади блоков, а не берётся константой."""
+    genbuilder = FakeGenBuilder()
+    await collect(build_service(genbuilder=genbuilder))
+    residential_area_ha = 0.01 * 0.01 * 111_320 * 111_320 * 0.5 / 10_000  # ~62 га на широте 60°
+    expected = round(420 * residential_area_ha)  # 420 чел/га у многоэтажной застройки
+    assert genbuilder.received_targets["residents"]["residential"] == pytest.approx(expected, rel=0.02)
+
+
+@pytest.mark.asyncio
+async def test_blocks_without_geometry_warn_instead_of_inventing_a_target():
+    genplanner = FakeGenPlanner()
+    genplanner.zones = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "geometry": None, "properties": {"territory_zone": 13}}],
+    }
+    events = await collect(build_service(genplanner=genplanner))
+    warnings = [event for event in events if event["type"] == "warning"]
+    assert any(event.get("detail") == "no_volume_target" for event in warnings)
 
 
 @pytest.mark.asyncio

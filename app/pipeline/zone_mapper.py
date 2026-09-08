@@ -15,6 +15,7 @@ from app.common.constants.pipeline_constants import (
     ZONE_NAME_PROPERTY_KEYS,
     ZONE_NAME_TO_PROFILE,
 )
+from app.pipeline.geo_area import SQUARE_METERS_IN_HECTARE, geometry_area_m2
 
 
 @dataclass
@@ -24,6 +25,7 @@ class MappingResult:
     buildable_count: int = 0
     skipped_by_profile: dict[int, int] = field(default_factory=dict)
     unrecognized_count: int = 0
+    area_by_zone: dict[str, float] = field(default_factory=dict)
 
     @property
     def total_count(self) -> int:
@@ -39,6 +41,9 @@ class MappingResult:
             },
             "unrecognized": self.unrecognized_count,
             "zones": sorted(self.zones_present),
+            "area_ha": {
+                zone: round(area / SQUARE_METERS_IN_HECTARE, 2) for zone, area in sorted(self.area_by_zone.items())
+            },
         }
 
     def warning_message(self) -> str | None:
@@ -81,11 +86,11 @@ def map_zones_to_blocks(zones: dict[str, Any]) -> MappingResult:
         if floors_group:
             block_properties["floors_group"] = floors_group
 
-        result.blocks["features"].append(
-            {"type": "Feature", "geometry": feature.get("geometry"), "properties": block_properties}
-        )
+        geometry = feature.get("geometry")
+        result.blocks["features"].append({"type": "Feature", "geometry": geometry, "properties": block_properties})
         result.zones_present.add(zone)
         result.buildable_count += 1
+        result.area_by_zone[zone] = result.area_by_zone.get(zone, 0.0) + geometry_area_m2(geometry)
 
     return result
 

@@ -108,18 +108,35 @@ NON_BUILDABLE_PROFILES: Final[frozenset[int]] = frozenset(
 # Обязательный минимум: у каждого профиля должна быть цель объёма — `residents` для жилья
 # и `coverage_area` для нежилья. Без неё GenBuilder пропускает соответствующую ветку
 # генерации целиком (`la_target <= 0` / `coverage_target <= 0`) и возвращает пустой результат.
+#
+# Обе цели — абсолютные величины на всю территорию, поэтому в таблицах они заданы удельно:
+# `residents_per_ha` (чел/га) и `coverage_ratio` (доля площади блоков зоны под застройку).
+# В абсолютные значения их переводит `targets_policy` по фактической площади блоков.
 PROFILE_TARGETS: Final[dict[int, dict[str, object]]] = {
-    1: {"density_scenario": "max", "floors_avg": 8, "default_floor_group": "medium", "residents": 6000},
-    3: {"density_scenario": "mean", "floors_avg": 2, "coverage_area": 10000},
-    4: {"density_scenario": "max", "floors_avg": 2, "coverage_area": 20000},
-    6: {"density_scenario": "mean", "floors_avg": 2, "coverage_area": 10000},
-    7: {"density_scenario": "max", "floors_avg": 12, "default_floor_group": "high", "coverage_area": 20000},
-    8: {"density_scenario": "mean", "floors_avg": 5, "default_floor_group": "medium", "coverage_area": 10000},
-    10: {"density_scenario": "max", "floors_avg": 2, "default_floor_group": "private", "residents": 800},
-    11: {"density_scenario": "max", "floors_avg": 4, "default_floor_group": "low", "residents": 2500},
-    12: {"density_scenario": "max", "floors_avg": 8, "default_floor_group": "medium", "residents": 6000},
-    13: {"density_scenario": "max", "floors_avg": 16, "default_floor_group": "high", "residents": 12000},
+    1: {"density_scenario": "max", "floors_avg": 8, "default_floor_group": "medium", "residents_per_ha": 250},
+    3: {"density_scenario": "mean", "floors_avg": 2, "coverage_ratio": 0.20},
+    4: {"density_scenario": "max", "floors_avg": 2, "coverage_ratio": 0.45},
+    6: {"density_scenario": "mean", "floors_avg": 2, "coverage_ratio": 0.25},
+    7: {"density_scenario": "max", "floors_avg": 12, "default_floor_group": "high", "coverage_ratio": 0.35},
+    8: {"density_scenario": "mean", "floors_avg": 5, "default_floor_group": "medium", "coverage_ratio": 0.25},
+    10: {"density_scenario": "max", "floors_avg": 2, "default_floor_group": "private", "residents_per_ha": 45},
+    11: {"density_scenario": "max", "floors_avg": 4, "default_floor_group": "low", "residents_per_ha": 130},
+    12: {"density_scenario": "max", "floors_avg": 8, "default_floor_group": "medium", "residents_per_ha": 250},
+    13: {"density_scenario": "max", "floors_avg": 16, "default_floor_group": "high", "residents_per_ha": 420},
 }
+
+# Удельные ключи оркестратора: в тело GenBuilder они не уходят, из них считаются
+# `residents` и `coverage_area`.
+RATE_TO_VOLUME_TARGET: Final[dict[str, str]] = {
+    "residents_per_ha": "residents",
+    "coverage_ratio": "coverage_area",
+}
+
+# «В разумных пределах»: верхние границы удельных величин.
+# Плотность — по потолку своей группы этажности (СП 42.13330, порядок величин),
+# застроенность — доля, выше которой квартал перестаёт быть кварталом.
+RESIDENTS_PER_HECTARE_CAP: Final[dict[str, int]] = {"private": 60, "low": 180, "medium": 320, "high": 450}
+COVERAGE_RATIO_CAP: Final[float] = 0.60
 
 # Как GenBuilder читает `targets_by_zone`: внешний ключ — параметр, внутренний — зона.
 GENBUILDER_TARGET_PARAMETERS: Final[tuple[str, ...]] = (

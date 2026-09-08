@@ -120,5 +120,15 @@ app/
 `coverage_area > 0`, деловая и «базовая» — любое из двух. Зоны без цели попадают
 в событие `warning` с кодом `no_volume_target`.
 
+Обе цели абсолютные — на всю территорию, поэтому политика задаёт их удельно
+(`residents_per_ha` и `coverage_ratio`), а абсолютные значения считаются от суммарной
+площади блоков зоны. Площадь берётся из самой геометрии по сферической формуле
+([`geo_area.py`](app/pipeline/geo_area.py)) — без geopandas, чтобы не тянуть стек GDAL
+ради одной формулы. Площади по зонам едут в `mapping_summary.area_ha`.
+
+Удельные величины ограничены сверху: плотность — потолком своей группы этажности,
+застроенность — `COVERAGE_RATIO_CAP`. Явно заданный абсолютный `residents`
+или `coverage_area` в `targets_overrides` побеждает расчёт по площади.
+
 Блоки: у каждой feature обязателен непустой `properties.zone` и геометрия
 Polygon/MultiPolygon. `properties.floors_group` на блоке перекрывает `default_floor_group`.
