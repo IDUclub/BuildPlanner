@@ -107,9 +107,11 @@ async def test_zones_are_emitted_before_buildings():
 
 @pytest.mark.asyncio
 async def test_selected_profile_drives_targets():
+    """Наружу уходит форма GenBuilder: параметр снаружи, зона внутри."""
     genbuilder = FakeGenBuilder()
     await collect(build_service(genbuilder=genbuilder))
-    assert genbuilder.received_targets["residential"]["floors_avg"] == 16  # профиль 13
+    assert genbuilder.received_targets["floors_avg"]["residential"] == 16  # профиль 13
+    assert genbuilder.received_targets["residents"]["residential"] == 12000
 
 
 @pytest.mark.asyncio

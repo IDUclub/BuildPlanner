@@ -8,6 +8,19 @@ class GenBuilderClient:
 
     Используется путь `by_territory`: зоны GenPlanner приходят прямым GeoJSON'ом,
     без промежуточного сохранения в Urban API (ADR-0001, D3).
+
+    Форма тела сверена с `TerritoryRequest` (ветка `main`):
+
+    - `blocks` — FeatureCollection полигонов, у каждого обязателен непустой
+      `properties.zone` и непустая геометрия Polygon/MultiPolygon;
+    - `targets_by_zone` — **параметр снаружи, зона внутри**:
+      `{"floors_avg": {"residential": 8}, ...}`. Обратная раскладка проходит
+      валидацию (тип обеих — `dict[str, dict]`) и молча игнорируется;
+    - `params` — гиперпараметры инференса, у сервиса есть свои дефолты;
+    - `existing_buildings`, `generation_parameters` — необязательные.
+
+    Ручка `by_territory` не требует авторизации (в отличие от `by_scenario`),
+    но заголовок отправляется: он безвреден и нужен остальным ручкам сервиса.
     """
 
     def __init__(self, handler: AsyncJsonApiHandler):

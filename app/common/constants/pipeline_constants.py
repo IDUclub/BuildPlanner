@@ -104,17 +104,45 @@ NON_BUILDABLE_PROFILES: Final[frozenset[int]] = frozenset(
 # «С максимальной эффективностью, но в разумных пределах»: верхняя граница плотности
 # при нормативном потолке этажности по группе. Дефолты GenBuilder
 # (`density_scenario: min`, `floors_avg: 19`, `default_floor_group: extreme`) не используются.
+#
+# Обязательный минимум: у каждого профиля должна быть цель объёма — `residents` для жилья
+# и `coverage_area` для нежилья. Без неё GenBuilder пропускает соответствующую ветку
+# генерации целиком (`la_target <= 0` / `coverage_target <= 0`) и возвращает пустой результат.
 PROFILE_TARGETS: Final[dict[int, dict[str, object]]] = {
-    1: {"density_scenario": "max", "floors_avg": 8, "default_floor_group": "medium"},
+    1: {"density_scenario": "max", "floors_avg": 8, "default_floor_group": "medium", "residents": 6000},
     3: {"density_scenario": "mean", "floors_avg": 2, "coverage_area": 10000},
     4: {"density_scenario": "max", "floors_avg": 2, "coverage_area": 20000},
     6: {"density_scenario": "mean", "floors_avg": 2, "coverage_area": 10000},
     7: {"density_scenario": "max", "floors_avg": 12, "default_floor_group": "high", "coverage_area": 20000},
-    8: {"density_scenario": "mean", "floors_avg": 5, "default_floor_group": "medium"},
-    10: {"density_scenario": "max", "floors_avg": 2, "default_floor_group": "private"},
-    11: {"density_scenario": "max", "floors_avg": 4, "default_floor_group": "low"},
-    12: {"density_scenario": "max", "floors_avg": 8, "default_floor_group": "medium"},
-    13: {"density_scenario": "max", "floors_avg": 16, "default_floor_group": "high"},
+    8: {"density_scenario": "mean", "floors_avg": 5, "default_floor_group": "medium", "coverage_area": 10000},
+    10: {"density_scenario": "max", "floors_avg": 2, "default_floor_group": "private", "residents": 800},
+    11: {"density_scenario": "max", "floors_avg": 4, "default_floor_group": "low", "residents": 2500},
+    12: {"density_scenario": "max", "floors_avg": 8, "default_floor_group": "medium", "residents": 6000},
+    13: {"density_scenario": "max", "floors_avg": 16, "default_floor_group": "high", "residents": 12000},
+}
+
+# Как GenBuilder читает `targets_by_zone`: внешний ключ — параметр, внутренний — зона.
+GENBUILDER_TARGET_PARAMETERS: Final[tuple[str, ...]] = (
+    "residents",
+    "coverage_area",
+    "floors_avg",
+    "density_scenario",
+    "default_floor_group",
+)
+
+# `density_scenario` вне этого набора роняет генерацию: `Unknown FAR scenario`.
+DENSITY_SCENARIOS: Final[frozenset[str]] = frozenset({"min", "mean", "max"})
+
+# Какая цель объёма включает генерацию для группы зон GenBuilder.
+# Жильё считает `residents` -> жилую площадь; промзона/транспорт/спецназначение — `coverage_area`;
+# деловая и «базовая» идут в смешанную ветку, ей хватит любой из двух.
+VOLUME_TARGET_BY_ZONE: Final[dict[str, tuple[str, ...]]] = {
+    "residential": ("residents",),
+    "business": ("residents", "coverage_area"),
+    "unknown": ("residents", "coverage_area"),
+    "industrial": ("coverage_area",),
+    "transport": ("coverage_area",),
+    "special": ("coverage_area",),
 }
 
 # Ключи свойств, под которыми GenPlanner отдаёт территориальную зону в feature.

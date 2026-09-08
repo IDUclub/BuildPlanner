@@ -102,3 +102,23 @@ app/
 
 `project_id` обязателен, поэтому сервис сначала достаёт его из `GET /api/v1/scenarios/{id}`
 (`scenario.project.project_id`); переопределяется полем `project_id` в опциях прогона.
+
+## Запрос в GenBuilder
+
+`POST /generate/by_territory` принимает `TerritoryRequest`. Два места, где легко ошибиться:
+
+**`targets_by_zone` — параметр снаружи, зона внутри.** GenBuilder читает
+`targets_by_zone["floors_avg"]["residential"]`, а не `["residential"]["floors_avg"]`.
+Обе формы — `dict[str, dict]`, поэтому перевёрнутую он принимает молча и игнорирует,
+откатываясь на свои дефолты. Внутри сервиса таргеты живут по зонам (так их удобно
+переопределять через `targets_overrides`), а `to_genbuilder_targets` разворачивает их
+перед отправкой. Допустимые параметры: `residents`, `coverage_area`, `floors_avg`,
+`density_scenario` (только `min`/`mean`/`max`), `default_floor_group`.
+
+**Без цели объёма зона не застраивается.** Генерация разбита на три ветки, у каждой
+свой порог: жильё требует `residents > 0`, промзона/транспорт/спецназначение —
+`coverage_area > 0`, деловая и «базовая» — любое из двух. Зоны без цели попадают
+в событие `warning` с кодом `no_volume_target`.
+
+Блоки: у каждой feature обязателен непустой `properties.zone` и геометрия
+Polygon/MultiPolygon. `properties.floors_group` на блоке перекрывает `default_floor_group`.

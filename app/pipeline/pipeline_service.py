@@ -23,7 +23,7 @@ from app.pipeline import events
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.profile_selector import NoIndicatorValuesError, ProfileSelection, select_profile
 from app.pipeline.schema.pipeline_schema import PipelineResultSchema, ProfileSelectionSchema
-from app.pipeline.targets_policy import build_targets_by_zone
+from app.pipeline.targets_policy import build_targets_by_zone, to_genbuilder_targets, zones_without_volume_target
 from app.pipeline.zone_mapper import map_zones_to_blocks
 
 
@@ -150,12 +150,21 @@ class PipelineService:
         run.targets_by_zone = build_targets_by_zone(
             selection.profile_id, mapping.zones_present, options.targets_overrides
         )
+        idle_zones = zones_without_volume_target(run.targets_by_zone)
+        if idle_zones:
+            message = (
+                f"У зон {', '.join(idle_zones)} нет цели объёма (residents/coverage_area) — "
+                "GenBuilder их не застроит."
+            )
+            run.warnings.append(message)
+            yield events.warning(events.STAGE_GENBUILDER, "no_volume_target", message)
+
         yield events.progress(events.STAGE_GENBUILDER)
         try:
             built = await self._genbuilder.generate_by_territory(
                 token=token,
                 blocks=mapping.blocks,
-                targets_by_zone=run.targets_by_zone,
+                targets_by_zone=to_genbuilder_targets(run.targets_by_zone),
             )
         except HTTPException as exc:
             # Зоны уже получены и отданы — это полезный частичный результат, а не провал прогона.
