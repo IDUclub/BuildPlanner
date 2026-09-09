@@ -2,6 +2,9 @@
 
 Главное, что здесь проверяется, — порядок: сообщения в брокер уходят последними.
 Сервисы оценок по сообщению идут читать сценарий, и опередить запись данных нельзя.
+
+Справочники подставлены в той же форме, в какой их отдаёт стенд: имена типов зон —
+английские слаги, русское название лежит в `zone_nickname`.
 """
 
 import base64
@@ -16,18 +19,28 @@ from app.common.auth.service_token import _subject
 from app.pipeline.scenario_publisher import ScenarioPublisher
 
 ZONE_TYPES = [
-    {"functional_zone_type_id": 3, "name": "Жилая многоэтажная", "zone_nickname": "Ж-4"},
-    {"functional_zone_type_id": 5, "name": "Рекреационная", "zone_nickname": None},
+    {"functional_zone_type_id": 2, "name": "recreation", "zone_nickname": "Рекреационная зона"},
+    {"functional_zone_type_id": 7, "name": "business", "zone_nickname": "Общественно-деловая зона"},
+    {"functional_zone_type_id": 13, "name": "residential_multistorey", "zone_nickname": "Многоэтажная жилая зона"},
 ]
 OBJECT_TYPES = [
-    {"physical_object_type_id": 11, "name": "Здание"},
-    {"physical_object_type_id": 12, "name": "Дорога"},
+    {"physical_object_type_id": 4, "name": "Жилой дом"},
+    {"physical_object_type_id": 5, "name": "Нежилое здание"},
+    {"physical_object_type_id": 52, "name": "Местная дорога"},
 ]
 
 
-def _feature(zone_name: str | None = None, **properties: Any) -> dict[str, Any]:
-    if zone_name is not None:
-        properties["territory_zone_name"] = zone_name
+def _zone(territory_zone: Any = None, name: str | None = None) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    if territory_zone is not None:
+        properties["territory_zone"] = territory_zone
+    if name is not None:
+        properties["territory_zone_name"] = name
+    return {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}, "properties": properties}
+
+
+def _building(zone: str = "residential", **properties: Any) -> dict[str, Any]:
+    properties["zone"] = zone
     return {"type": "Feature", "geometry": {"type": "Point", "coordinates": [30.0, 60.0]}, "properties": properties}
 
 
@@ -68,13 +81,16 @@ class FakeHandler:
     def payload(self, suffix: str) -> Any:
         return next(body for verb, path, body in self.calls if verb == "POST" and path.endswith(suffix))
 
+    def payloads(self, suffix: str) -> list[Any]:
+        return [body for verb, path, body in self.calls if verb == "POST" and path.endswith(suffix)]
+
 
 class RoadsOnlyHandler(FakeHandler):
     """Справочник без единого подходящего типа под здание."""
 
     async def get(self, path: str, params=None, headers=None) -> Any:
         await super().get(path, params, headers)
-        return [{"physical_object_type_id": 12, "name": "Дорога"}]
+        return [{"physical_object_type_id": 52, "name": "Местная дорога"}]
 
 
 class FakeTokens:
@@ -91,13 +107,13 @@ class FakeTokens:
 class FakeUrbanReader:
     def __init__(self, region_id: int | None = 42):
         self.region_id = region_id
-        self.geometry_calls = 0
+        self.ref_calls = 0
 
     async def get_project_ref(self, scenario_id: int, token: str) -> tuple[int, int | None]:
+        self.ref_calls += 1
         return 120, self.region_id
 
     async def get_project_geometry(self, project_id: int, token: str) -> dict[str, Any]:
-        self.geometry_calls += 1
         return {"type": "Polygon", "coordinates": []}
 
 
@@ -116,52 +132,63 @@ async def publish(publisher: ScenarioPublisher, zones=None, buildings=None):
     return await publisher.publish(
         source_scenario_id=835,
         user_token="user-token",
-        profile_name="Многоэтажная жилая",
+        profile_id=13,
+        profile_name="жилая многоэтажная",
         year=2026,
-        zones=zones if zones is not None else {"features": [_feature("Жилая многоэтажная")]},
+        zones=zones if zones is not None else {"features": [_zone(13)]},
         buildings=buildings,
     )
 
 
-# --------------------------------------------------------------------- клиент записи
+# --------------------------------------------------------------------- типы зон
 
 
 @pytest.mark.asyncio
-async def test_zones_go_in_one_request_with_resolved_type_ids():
-    """Ручка принимает массив — незачем слать по зоне за раз."""
+async def test_zone_id_is_the_same_number_on_both_sides():
+    """`territory_zone` GenPlanner'а и `functional_zone_type_id` Urban API — одно пространство id."""
     writer, handler = build_writer()
-    written, unknown = await writer.add_functional_zones(
-        7, [_feature("Жилая многоэтажная"), _feature("Рекреационная")], year=2026
-    )
-    assert (written, unknown) == (2, [])
+    written, skipped = await writer.add_functional_zones(7, [_zone(13), _zone(2)], year=2026)
+    assert (written, skipped) == (2, [])
     assert handler.paths().count("/api/v1/scenarios/7/functional_zones") == 1
-    assert [zone["functional_zone_type_id"] for zone in handler.payload("/functional_zones")] == [3, 5]
+    assert [zone["functional_zone_type_id"] for zone in handler.payload("/functional_zones")] == [13, 2]
 
 
 @pytest.mark.asyncio
-async def test_zone_type_is_matched_by_nickname_too():
+async def test_zone_without_id_falls_back_to_the_catalogue_nickname():
     writer, handler = build_writer()
-    written, unknown = await writer.add_functional_zones(7, [_feature("Ж-4")], year=2026)
-    assert (written, unknown) == (1, [])
-    assert handler.payload("/functional_zones")[0]["functional_zone_type_id"] == 3
+    written, skipped = await writer.add_functional_zones(7, [_zone(name="Многоэтажная жилая зона")], year=2026)
+    assert (written, skipped) == (1, [])
+    assert handler.payload("/functional_zones")[0]["functional_zone_type_id"] == 13
 
 
 @pytest.mark.asyncio
-async def test_unknown_zone_names_are_reported_not_guessed():
-    """`functional_zone_type_id` обязателен, а придумывать его нельзя."""
+async def test_genplanner_own_zone_name_is_translated_by_our_table():
+    """Имён GenPlanner'а в справочнике стенда нет — их переводит `ZONE_NAME_TO_PROFILE`."""
+    writer, handler = build_writer()
+    written, skipped = await writer.add_functional_zones(7, [_zone(name="общественно-деловая")], year=2026)
+    assert (written, skipped) == (1, [])
+    assert handler.payload("/functional_zones")[0]["functional_zone_type_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_zone_id_unknown_to_the_stand_is_skipped_not_guessed():
+    """`functional_zone_type_id` обязателен, но чужой id подставлять нельзя."""
     writer, _ = build_writer()
-    written, unknown = await writer.add_functional_zones(
-        7, [_feature("Жилая многоэтажная"), _feature("Зона неизвестного назначения")], year=2026
+    written, skipped = await writer.add_functional_zones(
+        7, [_zone(13), _zone(999, name="Зона неизвестного назначения")], year=2026
     )
     assert written == 1
-    assert unknown == ["Зона неизвестного назначения"]
+    assert skipped == ["Зона неизвестного назначения"]
+
+
+# --------------------------------------------------------------------- здания
 
 
 @pytest.mark.asyncio
 async def test_building_takes_two_requests_and_reuses_the_returned_id():
     writer, handler = build_writer()
-    written = await writer.add_buildings(7, territory_id=42, features=[_feature(storeys_count=16)])
-    assert written == 1
+    written, types = await writer.add_buildings(7, territory_id=42, features=[_building(storeys_count=16)])
+    assert (written, types) == (1, [4])
     assert handler.paths() == ["/api/v1/scenarios/7/physical_objects", "/api/v1/scenarios/7/buildings"]
     building = handler.payload("/buildings")
     assert building["physical_object_id"] == 555
@@ -170,12 +197,22 @@ async def test_building_takes_two_requests_and_reuses_the_returned_id():
 
 
 @pytest.mark.asyncio
+async def test_residential_and_other_buildings_get_different_types():
+    """Свести жильё и общественно-деловую застройку в один тип — соврать о назначении."""
+    writer, handler = build_writer()
+    written, types = await writer.add_buildings(
+        7, territory_id=42, features=[_building("residential"), _building("business")]
+    )
+    assert (written, types) == (2, [4, 5])
+    assert sorted(body["physical_object_type_id"] for body in handler.payloads("/physical_objects")) == [4, 5]
+
+
+@pytest.mark.asyncio
 async def test_missing_building_type_names_what_is_available():
     """Молча выбрать «какой-нибудь» тип нельзя — здания уедут не туда."""
-    handler = RoadsOnlyHandler()
-    writer = UrbanScenarioWriter(handler, FakeTokens())
+    writer, _ = build_writer(RoadsOnlyHandler())
     with pytest.raises(HTTPException) as exc_info:
-        await writer.building_type_id()
+        await writer.building_type_id("residential")
     assert exc_info.value.status_code == 502
     assert "дорога" in json.dumps(exc_info.value.detail, ensure_ascii=False).lower()
 
@@ -187,7 +224,7 @@ async def test_missing_building_type_names_what_is_available():
 async def test_broker_is_notified_after_the_data_is_written():
     """Сервисы оценок по сообщению идут читать сценарий — опередить запись нельзя."""
     publisher, handler, _ = build_publisher()
-    await publish(publisher, buildings={"features": [_feature(storeys_count=9)]})
+    await publish(publisher, buildings={"features": [_building(storeys_count=9)]})
     paths = handler.paths()
     broker = next(index for index, path in enumerate(paths) if "/api/broker/" in path)
     assert paths.index("/api/v1/scenarios/777/functional_zones") < broker
@@ -195,14 +232,21 @@ async def test_broker_is_notified_after_the_data_is_written():
 
 
 @pytest.mark.asyncio
+async def test_broker_message_lists_the_types_actually_written():
+    publisher, handler, _ = build_publisher()
+    await publish(publisher, buildings={"features": [_building("residential"), _building("business")]})
+    assert handler.payload("scenario_objects_updated")["physical_object_types"] == [4, 5]
+
+
+@pytest.mark.asyncio
 async def test_generated_scenario_lands_in_a_service_project():
     """Владельца задаёт только `POST /projects?user_id=...` — иначе прогон повиснет у пользователя."""
     publisher, handler, _ = build_publisher()
     published = await publish(publisher)
-    assert published.project_id == 900
-    assert published.scenario_id == 777
+    assert (published.project_id, published.scenario_id) == (900, 777)
     copy_body = handler.payload("/api/v1/scenarios/835")
     assert copy_body["project_id"] == 900
+    assert copy_body["functional_zone_type_id"] == 13
 
 
 @pytest.mark.asyncio
@@ -212,6 +256,13 @@ async def test_service_project_is_created_once_per_source_project():
     await publish(publisher)
     await publish(publisher)
     assert handler.paths().count("/api/v1/projects") == 1
+
+
+@pytest.mark.asyncio
+async def test_project_is_looked_up_once_per_run():
+    publisher, _, reader = build_publisher()
+    await publish(publisher, buildings={"features": [_building()]})
+    assert reader.ref_calls == 1
 
 
 @pytest.mark.asyncio

@@ -48,6 +48,10 @@ INDICATOR_NAMES: Final[dict[int, str]] = {
 
 # --- 2. Профили GenPlanner ------------------------------------------------------------------
 
+# Это же пространство идентификаторов, что и `functional_zone_type_id` Urban API:
+# 1 residential, 2 recreation, 7 business, 13 residential_multistorey и так далее.
+# Поэтому при записи сценария зона не переводится, а проверяется по справочнику стенда
+# (`GET /api/v1/functional_zones_types`) — см. `UrbanScenarioWriter.add_functional_zones`.
 PROFILE_NAMES: Final[dict[int, str]] = {
     1: "жилая",
     2: "рекреационная",
@@ -98,6 +102,13 @@ GENPLANNER_TO_GENBUILDER_ZONE: Final[dict[int, tuple[str, str | None] | None]] =
 NON_BUILDABLE_PROFILES: Final[frozenset[int]] = frozenset(
     profile_id for profile_id, mapping in GENPLANNER_TO_GENBUILDER_ZONE.items() if mapping is None
 )
+
+# Зона GenBuilder -> тип физобъекта Urban API, под которым здание записывается в сценарий.
+# Не id, а имя: id справочника у каждого стенда свои, а имена совпадают.
+# GenBuilder ставит и жильё, и общественно-деловую застройку — свести их в один тип
+# означало бы соврать о назначении половины зданий.
+BUILDING_TYPE_NAME_BY_ZONE: Final[dict[str, str]] = {"residential": "Жилой дом"}
+DEFAULT_BUILDING_TYPE_NAME: Final[str] = "Нежилое здание"
 
 # --- 4. Политика застройки ------------------------------------------------------------------
 

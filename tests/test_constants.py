@@ -1,6 +1,8 @@
 """Полнота таблиц перевода. Рассинхрон здесь — самый частый источник ошибок пайплайна."""
 
 from app.common.constants.pipeline_constants import (
+    BUILDING_TYPE_NAME_BY_ZONE,
+    DEFAULT_BUILDING_TYPE_NAME,
     GENPLANNER_TO_GENBUILDER_ZONE,
     INDICATOR_NAMES,
     INDICATOR_TO_PROFILE,
@@ -54,3 +56,21 @@ def test_no_target_repeats_genbuilder_bad_defaults():
     for profile_id, target in PROFILE_TARGETS.items():
         assert target["floors_avg"] < 19, f"профиль {profile_id} унаследовал дефолт GenBuilder"
         assert target.get("default_floor_group") != "extreme"
+
+
+# Снято со стенда 2026-09-09: GET /api/v1/functional_zones_types.
+# Профили пайплайна живут в этом же пространстве id, поэтому при записи сценария
+# зона не переводится. Тест ловит попытку завести профиль, которого Urban API не знает.
+URBAN_FUNCTIONAL_ZONE_TYPE_IDS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15})
+
+
+def test_every_profile_is_a_known_urban_api_zone_type():
+    unknown = set(PROFILE_NAMES) - URBAN_FUNCTIONAL_ZONE_TYPE_IDS
+    assert not unknown, f"Urban API не знает таких типов зон: {sorted(unknown)}"
+
+
+def test_building_types_cover_every_genbuilder_zone():
+    """У каждой застраиваемой зоны должен быть тип физобъекта — хотя бы дефолтный."""
+    zones = {mapping[0] for mapping in GENPLANNER_TO_GENBUILDER_ZONE.values() if mapping is not None}
+    assert zones - set(BUILDING_TYPE_NAME_BY_ZONE) == zones - {"residential"}
+    assert DEFAULT_BUILDING_TYPE_NAME

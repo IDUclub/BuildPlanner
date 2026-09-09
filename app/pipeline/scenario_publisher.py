@@ -54,16 +54,19 @@ class ScenarioPublisher:
         *,
         source_scenario_id: int,
         user_token: str,
+        profile_id: int | None,
         profile_name: str,
         year: int,
         zones: dict[str, Any] | None,
         buildings: dict[str, Any] | None,
     ) -> PublishedScenario:
-        project_id = await self._service_project(source_scenario_id, user_token)
+        source_project_id, region_id = await self._urban.get_project_ref(source_scenario_id, user_token)
+        project_id = await self._service_project(source_project_id, region_id, user_token)
         scenario_id = await self._writer.copy_scenario(
             source_scenario_id=source_scenario_id,
             project_id=project_id,
             name=f"{profile_name} — прогон по сценарию {source_scenario_id}",
+            profile_id=profile_id,
         )
         published = PublishedScenario(project_id=project_id, scenario_id=scenario_id)
 
@@ -77,14 +80,16 @@ class ScenarioPublisher:
 
         building_features = (buildings or {}).get("features") or []
         published.buildings_total = len(building_features)
-        territory_id = await self._territory_id(source_scenario_id, user_token)
-        if building_features and territory_id is not None:
-            published.buildings_written = await self._writer.add_buildings(scenario_id, territory_id, building_features)
+        object_types: list[int] = []
+        if building_features and region_id is not None:
+            published.buildings_written, object_types = await self._writer.add_buildings(
+                scenario_id, region_id, building_features
+            )
 
-        await self._notify(published)
+        await self._notify(published, object_types)
         return published
 
-    async def _notify(self, published: PublishedScenario) -> None:
+    async def _notify(self, published: PublishedScenario, object_types: list[int]) -> None:
         """Сообщения в брокер — последним шагом и только по тому, что реально записано."""
         if published.zones_written:
             await self._writer.notify_zones_updated(published.project_id, published.scenario_id)
@@ -92,14 +97,13 @@ class ScenarioPublisher:
             await self._writer.notify_objects_updated(
                 published.project_id,
                 published.scenario_id,
-                physical_object_types=[await self._writer.building_type_id()],
+                physical_object_types=object_types,
             )
         published.notified = bool(published.zones_written or published.buildings_written)
         if not published.notified:
             logger.warning("Сценарий {} пуст — в брокер не сообщаю", published.scenario_id)
 
-    async def _service_project(self, source_scenario_id: int, user_token: str) -> int:
-        source_project_id, region_id = await self._urban.get_project_ref(source_scenario_id, user_token)
+    async def _service_project(self, source_project_id: int, region_id: int | None, user_token: str) -> int:
         cached = self._service_projects.get(source_project_id)
         if cached is not None:
             return cached
@@ -128,7 +132,3 @@ class ScenarioPublisher:
         )
         self._service_projects[source_project_id] = project_id
         return project_id
-
-    async def _territory_id(self, source_scenario_id: int, user_token: str) -> int | None:
-        _, region_id = await self._urban.get_project_ref(source_scenario_id, user_token)
-        return region_id

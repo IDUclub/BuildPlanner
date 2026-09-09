@@ -241,6 +241,7 @@ class PipelineService:
             published = await self._publisher.publish(
                 source_scenario_id=run.scenario_id,
                 user_token=token,
+                profile_id=run.selection.profile_id,
                 profile_name=run.selection.profile_name,
                 year=datetime.now(timezone.utc).year,
                 zones=run.zones,
