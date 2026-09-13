@@ -87,9 +87,10 @@ class ChatService:
             if event["type"] == "profile_selected":
                 summary_lines.append(str(event.get("reason", "")))
             if event["type"] == "scenario_published":
+                scoring = "по нему считаются оценки" if event.get("notified") else "расчёт оценок не запущен"
                 summary_lines.append(
                     f"Результат сохранён сценарием {event.get('scenario_id')} "
-                    f"в проекте {event.get('project_id')} — по нему считаются оценки."
+                    f"в проекте {event.get('project_id')} — {scoring}."
                 )
             if event["type"] == "warning" and event.get("message"):
                 summary_lines.append(str(event["message"]))

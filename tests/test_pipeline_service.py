@@ -51,9 +51,17 @@ ZONES = {
 
 
 class FakeUrban:
-    def __init__(self, values: list[dict[str, Any]] | None = None, groups_fail: bool = False):
+    def __init__(
+        self,
+        values: list[dict[str, Any]] | None = None,
+        groups_fail: bool = False,
+        region_id: int | None = 1,
+    ):
         self.values = INDICATOR_VALUES if values is None else values
         self.groups_fail = groups_fail
+        self.region_id = region_id
+        self.project_fails = False
+        self.project_ref_calls = 0
         self.requested_ids: list[Any] = []
 
     async def get_scenario_indicators(self, scenario_id: int, token: str, indicator_ids=None) -> list[dict[str, Any]]:
@@ -65,8 +73,11 @@ class FakeUrban:
             raise RuntimeError("справочник недоступен")
         return [{"name": "demogrphy", "indicators": [{"indicator_id": 271}]}]
 
-    async def get_project_id(self, scenario_id: int, token: str) -> int:
-        return 120
+    async def get_project_ref(self, scenario_id: int, token: str) -> tuple[int, int | None]:
+        self.project_ref_calls += 1
+        if self.project_fails:
+            raise HTTPException(status_code=502, detail={"msg": "Urban API недоступен"})
+        return 120, self.region_id
 
     @staticmethod
     def latest_values_by_indicator(raw_values, indicator_ids):
@@ -96,17 +107,25 @@ class FakeGenBuilder:
     def __init__(self, fail: bool = False):
         self.fail = fail
         self.received_targets: dict[str, Any] | None = None
+        self.received_territory_id: int | None = None
 
-    async def generate_by_territory(self, token, blocks, targets_by_zone, **_kwargs) -> dict[str, Any]:
+    async def generate_by_territory(
+        self, token, blocks, targets_by_zone, territory_id=None, **_kwargs
+    ) -> dict[str, Any]:
         if self.fail:
             raise HTTPException(status_code=500, detail={"msg": "builder down"})
         self.received_targets = targets_by_zone
+        self.received_territory_id = territory_id
         return {"buildings": {"type": "FeatureCollection", "features": [{"type": "Feature"}]}}
 
 
-def build_service(genbuilder: FakeGenBuilder | None = None, genplanner: FakeGenPlanner | None = None):
+def build_service(
+    genbuilder: FakeGenBuilder | None = None,
+    genplanner: FakeGenPlanner | None = None,
+    urban: FakeUrban | None = None,
+):
     return PipelineService(
-        urban_client=FakeUrban(),
+        urban_client=urban or FakeUrban(),
         genplanner_client=genplanner or FakeGenPlanner(),
         genbuilder_client=genbuilder or FakeGenBuilder(),
     )
@@ -258,6 +277,74 @@ async def test_explicit_project_id_wins_over_lookup():
     assert genplanner.received["project_id"] == 7
 
 
+def _services_warnings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [event for event in events if event["type"] == "warning" and event["detail"] == "services_region_unknown"]
+
+
+@pytest.mark.asyncio
+async def test_project_region_reaches_genbuilder():
+    """По нормативам региона GenBuilder расставляет школы и сады в жилых кварталах."""
+    genbuilder = FakeGenBuilder()
+    events = await collect(build_service(genbuilder=genbuilder))
+    assert genbuilder.received_territory_id == 1
+    assert not _services_warnings(events)
+
+
+@pytest.mark.asyncio
+async def test_project_and_region_come_from_one_lookup():
+    urban = FakeUrban()
+    await collect(build_service(urban=urban))
+    assert urban.project_ref_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_region_warns_that_services_are_missing():
+    genbuilder = FakeGenBuilder()
+    events = await collect(build_service(genbuilder=genbuilder, urban=FakeUrban(region_id=None)))
+    assert genbuilder.received_territory_id is None
+    assert _services_warnings(events)
+    assert "result" in [event["type"] for event in events]
+
+
+@pytest.mark.asyncio
+async def test_no_services_warning_without_residential_blocks():
+    """Сервисы ставятся только в жилых кварталах — без них предупреждать не о чем."""
+    genplanner = FakeGenPlanner()
+    genplanner.zones = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "geometry": _square(30.0, 60.0), "properties": {"territory_zone": 4}}],
+    }
+    genbuilder = FakeGenBuilder()
+    events = await collect(build_service(genbuilder=genbuilder, genplanner=genplanner, urban=FakeUrban(region_id=None)))
+    assert genbuilder.received_targets is not None
+    assert not _services_warnings(events)
+
+
+@pytest.mark.asyncio
+async def test_region_is_resolved_when_zones_come_from_cache():
+    """Кэш зон пропускает запрос проекта для GenPlanner, но регион GenBuilder всё равно нужен."""
+    urban, genbuilder = FakeUrban(), FakeGenBuilder()
+    service = build_service(genbuilder=genbuilder, urban=urban)
+    await collect(service)
+    genbuilder.received_territory_id = None
+    await collect(service)
+    assert urban.project_ref_calls == 2
+    assert genbuilder.received_territory_id == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_region_lookup_costs_only_the_services():
+    urban, genbuilder = FakeUrban(), FakeGenBuilder()
+    service = build_service(genbuilder=genbuilder, urban=urban)
+    await collect(service)
+    urban.project_fails = True
+    events = await collect(service)
+    types = [event["type"] for event in events]
+    assert "result" in types
+    assert "error" not in types
+    assert _services_warnings(events)
+
+
 @pytest.mark.asyncio
 async def test_manual_profile_skips_indicators():
     events = await collect(build_service(), PipelineOptionsDTO(profile_id=4))
@@ -276,15 +363,16 @@ async def test_zones_are_cached_between_runs():
 
 
 class FakePublisher:
-    def __init__(self, fail: bool = False):
+    def __init__(self, fail: bool = False, published: dict[str, Any] | None = None):
         self.fail = fail
+        self.published = published or {"project_id": 900, "scenario_id": 777, "notified": True}
         self.received: dict[str, Any] | None = None
 
     async def publish(self, **kwargs):
         if self.fail:
             raise HTTPException(status_code=403, detail={"msg": "нет прав"})
         self.received = kwargs
-        return SimpleNamespace(as_dict=lambda: {"project_id": 900, "scenario_id": 777, "notified": True})
+        return SimpleNamespace(as_dict=lambda: self.published)
 
 
 @pytest.mark.asyncio
@@ -305,6 +393,52 @@ async def test_failed_publication_does_not_lose_the_generation():
     assert "result" in types
     assert "error" not in types
     assert any(event.get("stage") == "publish_scenario" for event in events if event["type"] == "warning")
+
+
+@pytest.mark.asyncio
+async def test_partially_saved_scenario_is_named_in_the_warning():
+    """The scenario exists in Urban API even if a later step failed — the user must get its id."""
+    publisher = FakePublisher(
+        published={
+            "project_id": 900,
+            "scenario_id": 777,
+            "notified": False,
+            "failed_stage": "functional_zones",
+            "error": "нет прав",
+        }
+    )
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), publisher=publisher)
+    events = await collect(service)
+    published = next(event for event in events if event["type"] == "scenario_published")
+    assert published["scenario_id"] == 777
+    warnings = [event for event in events if event["type"] == "warning" and event["stage"] == "publish_scenario"]
+    assert any("777" in event["message"] for event in warnings)
+
+
+@pytest.mark.asyncio
+async def test_lost_buildings_and_unknown_services_are_reported():
+    publisher = FakePublisher(
+        published={
+            "project_id": 900,
+            "scenario_id": 777,
+            "notified": True,
+            "buildings_failed": 3,
+            "buildings_total": 10,
+            "unknown_service_names": ["Космодром"],
+        }
+    )
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), publisher=publisher)
+    details = {event["detail"] for event in await collect(service) if event["type"] == "warning"}
+    assert {"buildings_failed", "unknown_service_types"} <= details
+
+
+@pytest.mark.asyncio
+async def test_result_summary_counts_what_was_built():
+    events = await collect(build_service())
+    summary = next(event for event in events if event["type"] == "result")["summary"]
+    assert summary["buildings"] == 1
+    assert {"residents", "living_area_m2", "building_area_m2", "services", "buildings_by_zone"} <= set(summary)
+    assert summary["profile"] == "жилая многоэтажная"
 
 
 @pytest.mark.asyncio

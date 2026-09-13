@@ -11,24 +11,34 @@
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from fastapi import HTTPException
 from loguru import logger
 
 from app.clients.urban_api_client import UrbanApiClient
-from app.clients.urban_scenario_writer import UrbanScenarioWriter
+from app.clients.urban_scenario_writer import BuildingsWritten, UrbanScenarioWriter
 from app.common.exceptions.http_exception import http_exception
 
 
 @dataclass
 class PublishedScenario:
-    """Что получилось записать. `scenario_id` — тот, по которому придут оценки."""
+    """Что получилось записать. `scenario_id` — тот, по которому придут оценки.
+
+    `failed_stage` is set when the scenario was created but a later step failed:
+    the scenario exists in Urban API and must stay findable by its id.
+    """
 
     project_id: int
     scenario_id: int
     zones_written: int = 0
     buildings_written: int = 0
+    buildings_failed: int = 0
     buildings_total: int = 0
+    services_written: int = 0
     unknown_zone_names: list[str] = field(default_factory=list)
+    unknown_service_names: list[str] = field(default_factory=list)
     notified: bool = False
+    failed_stage: str | None = None
+    error: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,26 +80,48 @@ class ScenarioPublisher:
         )
         published = PublishedScenario(project_id=project_id, scenario_id=scenario_id)
 
-        zone_features = (zones or {}).get("features") or []
-        if zone_features:
-            published.zones_written, published.unknown_zone_names = await self._writer.add_functional_zones(
-                scenario_id, zone_features, year=year
-            )
-            if published.unknown_zone_names:
-                logger.warning("Зоны без типа в справочнике Urban API: {}", published.unknown_zone_names)
-
-        building_features = (buildings or {}).get("features") or []
-        published.buildings_total = len(building_features)
-        object_types: list[int] = []
-        if building_features and region_id is not None:
-            published.buildings_written, object_types = await self._writer.add_buildings(
-                scenario_id, region_id, building_features
-            )
-
-        await self._notify(published, object_types)
+        stage = "functional_zones"
+        try:
+            await self._add_zones(published, zones, year)
+            stage = "buildings"
+            written = await self._add_buildings(published, region_id, buildings)
+            stage = "broker"
+            await self._notify(published, written)
+        except HTTPException as exc:
+            logger.warning("Scenario {} is written partially, failed at {}: {}", scenario_id, stage, exc.detail)
+            published.failed_stage = stage
+            published.error = str(exc.detail)[:500]
         return published
 
-    async def _notify(self, published: PublishedScenario, object_types: list[int]) -> None:
+    async def _add_zones(self, published: PublishedScenario, zones: dict[str, Any] | None, year: int) -> None:
+        zone_features = (zones or {}).get("features") or []
+        if not zone_features:
+            return
+        published.zones_written, published.unknown_zone_names = await self._writer.add_functional_zones(
+            published.scenario_id, zone_features, year=year
+        )
+        if published.unknown_zone_names:
+            logger.warning("Зоны без типа в справочнике Urban API: {}", published.unknown_zone_names)
+
+    async def _add_buildings(
+        self,
+        published: PublishedScenario,
+        region_id: int | None,
+        buildings: dict[str, Any] | None,
+    ) -> BuildingsWritten:
+        building_features = (buildings or {}).get("features") or []
+        published.buildings_total = len(building_features)
+        if not building_features or region_id is None:
+            return BuildingsWritten()
+
+        written = await self._writer.add_buildings(published.scenario_id, region_id, building_features)
+        published.buildings_written = written.written
+        published.buildings_failed = written.failed
+        published.services_written = written.services_written
+        published.unknown_service_names = written.unknown_service_names
+        return written
+
+    async def _notify(self, published: PublishedScenario, written: BuildingsWritten) -> None:
         """Сообщения в брокер — последним шагом и только по тому, что реально записано."""
         if published.zones_written:
             await self._writer.notify_zones_updated(published.project_id, published.scenario_id)
@@ -97,7 +129,8 @@ class ScenarioPublisher:
             await self._writer.notify_objects_updated(
                 published.project_id,
                 published.scenario_id,
-                physical_object_types=object_types,
+                physical_object_types=written.object_type_ids,
+                service_types=written.service_type_ids,
             )
         published.notified = bool(published.zones_written or published.buildings_written)
         if not published.notified:

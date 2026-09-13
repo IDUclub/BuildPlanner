@@ -18,16 +18,17 @@ from loguru import logger
 from app.clients.genbuilder_client import GenBuilderClient
 from app.clients.genplanner_client import GenPlannerClient
 from app.clients.urban_api_client import UrbanApiClient
-from app.common.constants.pipeline_constants import PROFILE_NAMES, SELECTION_INDICATOR_IDS
+from app.common.constants.pipeline_constants import PROFILE_NAMES, RESIDENTIAL_ZONE, SELECTION_INDICATOR_IDS
 from app.common.exceptions.http_exception import http_exception
 from app.pipeline import events
+from app.pipeline.buildings_summary import summarize_buildings
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.indicators_view import build_overview
 from app.pipeline.profile_selector import NoIndicatorValuesError, ProfileSelection, select_profile
 from app.pipeline.scenario_publisher import ScenarioPublisher
 from app.pipeline.schema.pipeline_schema import PipelineResultSchema, ProfileSelectionSchema
 from app.pipeline.targets_policy import build_targets_by_zone, to_genbuilder_targets, zones_without_volume_target
-from app.pipeline.zone_mapper import map_zones_to_blocks
+from app.pipeline.zone_mapper import MappingResult, map_zones_to_blocks
 
 
 @dataclass
@@ -41,6 +42,7 @@ class PipelineRun:
     roads: dict[str, Any] | None = None
     buildings: dict[str, Any] | None = None
     published: dict[str, Any] | None = None
+    source_project: tuple[int, int | None] | None = None
     targets_by_zone: dict[str, dict[str, Any]] = field(default_factory=dict)
     mapping_summary: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -180,7 +182,20 @@ class PipelineService:
             yield events.warning(events.STAGE_GENBUILDER, "nothing_to_build", message)
             return
 
-        # --- застройка
+        async for event in self._emit_buildings(run, token, options, selection, mapping):
+            yield event
+
+    # ------------------------------------------------------------------ внутренности
+
+    async def _emit_buildings(
+        self,
+        run: PipelineRun,
+        token: str,
+        options: PipelineOptionsDTO,
+        selection: ProfileSelection,
+        mapping: MappingResult,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Volume targets, the services region and GenBuilder; a failed build keeps the zones."""
         # Цели объёма считает политика: у пользователя их не спрашиваем, число жителей
         # выводится из площади блоков и нормативного потолка плотности.
         run.targets_by_zone = build_targets_by_zone(
@@ -198,12 +213,22 @@ class PipelineService:
             run.warnings.append(message)
             yield events.warning(events.STAGE_GENBUILDER, "no_volume_target", message)
 
+        region_id = await self._services_region(run, token)
+        if region_id is None and RESIDENTIAL_ZONE in mapping.zones_present:
+            message = (
+                "Регион проекта не определён — сервисы (школы, детские сады и т. п.) "
+                "в жилых кварталах расставлены не будут."
+            )
+            run.warnings.append(message)
+            yield events.warning(events.STAGE_GENBUILDER, "services_region_unknown", message)
+
         yield events.progress(events.STAGE_GENBUILDER)
         try:
             built = await self._genbuilder.generate_by_territory(
                 token=token,
                 blocks=mapping.blocks,
                 targets_by_zone=to_genbuilder_targets(run.targets_by_zone),
+                territory_id=region_id,
             )
         except HTTPException as exc:
             # Зоны уже получены и отданы — это полезный частичный результат, а не провал прогона.
@@ -219,8 +244,6 @@ class PipelineService:
 
         for descriptor in built.get("files", []) or []:
             yield {"type": "file", **descriptor, "source_service": descriptor.get("source_service", "genbuilder")}
-
-    # ------------------------------------------------------------------ внутренности
 
     async def _emit_published(
         self,
@@ -256,6 +279,9 @@ class PipelineService:
 
         run.published = published.as_dict()
         yield events.scenario_published(run.published)
+        for message, detail in _publication_warnings(run.published):
+            run.warnings.append(message)
+            yield events.warning(events.STAGE_PUBLISH, detail, message)
 
     async def _emit_territory_indicators(self, run: PipelineRun, token: str) -> AsyncIterator[dict[str, Any]]:
         overview, error = await self.territory_indicators(run.scenario_id, token)
@@ -310,7 +336,7 @@ class PipelineService:
             logger.info("Зоны сценария {} взяты из кэша", run.scenario_id)
             return cached[1]
 
-        project_id = options.project_id or await self._urban.get_project_id(run.scenario_id, token)
+        project_id = options.project_id or (await self._source_project(run, token))[0]
         generated = await self._genplanner.run_func_generation(
             token=token,
             scenario_id=run.scenario_id,
@@ -320,6 +346,21 @@ class PipelineService:
         )
         self._zones_cache[cache_key] = (time.monotonic(), generated)
         return generated
+
+    async def _source_project(self, run: PipelineRun, token: str) -> tuple[int, int | None]:
+        """`(project_id, region_id)` of the source scenario, fetched once per run."""
+        if run.source_project is None:
+            run.source_project = await self._urban.get_project_ref(run.scenario_id, token)
+        return run.source_project
+
+    async def _services_region(self, run: PipelineRun, token: str) -> int | None:
+        """Region whose normatives let GenBuilder place services; an unknown region only costs the services."""
+        try:
+            _, region_id = await self._source_project(run, token)
+        except HTTPException as exc:
+            logger.warning("Project region of scenario {} is unavailable: {}", run.scenario_id, exc.detail)
+            return None
+        return region_id
 
     @staticmethod
     def _cache_key(
@@ -337,8 +378,37 @@ class PipelineService:
 
     @staticmethod
     def _build_summary(run: PipelineRun, built: dict[str, Any]) -> dict[str, Any]:
-        summary = dict(built.get("summary") or {})
-        summary.setdefault("buildings", len((run.buildings or {}).get("features", [])))
+        features = (run.buildings or {}).get("features") or []
+        summary = {**summarize_buildings(features), **(built.get("summary") or {})}
         summary["profile"] = run.selection.profile_name if run.selection else None
         summary["blocks"] = run.mapping_summary
         return summary
+
+
+def _publication_warnings(published: dict[str, Any]) -> list[tuple[str, str]]:
+    """Everything the user must know about a scenario that was saved only partly, as `(message, detail)`."""
+    warnings: list[tuple[str, str]] = []
+    if published.get("failed_stage"):
+        warnings.append(
+            (
+                f"Сценарий {published.get('scenario_id')} создан, но записан не полностью "
+                f"(шаг {published['failed_stage']}) — расчёт оценок по нему не запущен.",
+                str(published.get("error") or published["failed_stage"]),
+            )
+        )
+    if published.get("buildings_failed"):
+        warnings.append(
+            (
+                f"Не записано зданий: {published['buildings_failed']} из {published.get('buildings_total')}.",
+                "buildings_failed",
+            )
+        )
+    if published.get("unknown_service_names"):
+        warnings.append(
+            (
+                "Сервисы без типа в справочнике Urban API не записаны: "
+                f"{', '.join(published['unknown_service_names'])}.",
+                "unknown_service_types",
+            )
+        )
+    return warnings

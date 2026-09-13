@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     keycloak_client_secret: str = ""
 
     # публикация результата в Urban API
-    publish_to_urban: bool = True
+    publish_to_urban: bool = False
     service_project_prefix: str = "BuildPlanner"
     publish_zone_source: str = "BuildPlanner"
     publish_max_concurrency: int = 8

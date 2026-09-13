@@ -103,6 +103,9 @@ NON_BUILDABLE_PROFILES: Final[frozenset[int]] = frozenset(
     profile_id for profile_id, mapping in GENPLANNER_TO_GENBUILDER_ZONE.items() if mapping is None
 )
 
+# Сервисы (школы, сады, поликлиники) GenBuilder ставит только в жилых кварталах.
+RESIDENTIAL_ZONE: Final[str] = "residential"
+
 # Зона GenBuilder -> тип физобъекта Urban API, под которым здание записывается в сценарий.
 # Не id, а имя: id справочника у каждого стенда свои, а имена совпадают.
 # GenBuilder ставит и жильё, и общественно-деловую застройку — свести их в один тип
