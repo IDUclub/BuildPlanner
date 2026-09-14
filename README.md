@@ -61,11 +61,104 @@ make test     # pytest
 **`profile_selected`** · `zones` · `roads` · `result` · **`scenario_published`** ·
 `file` · `warning` · `error` · `done`
 
-Стадии `progress`: `fetch_indicators` → `select_profile` → `genplanner` → `map_zones` →
-`genbuilder` → `assemble` → `publish_scenario`.
-
 HTTP-статус потока всегда `200`: фатальная ошибка приходит событием `error` внутри потока.
 Если GenBuilder упал, зоны всё равно уже отданы — это полезный частичный результат, а не провал.
+
+**Кадр.** Ключ `type` становится именем события, остальное — JSON в `data`, кириллица
+не экранируется. Между событиями идут ping-комментарии keep-alive — их пропускают.
+
+```
+event: progress
+data: {"stage": "genplanner", "content": "Генерирую территориальные зоны"}
+```
+
+**Порядок в `chat/stream`.** В квадратных скобках — события, которые приходят не всегда.
+
+```
+[warning load_history]                        история чата недоступна
+[chat_created]                                только для нового чата
+token × N                                     текст ответа модели кусками
+                                              — модель не запускает пайплайн: сразу done
+progress fetch_indicators
+indicators
+territory_indicators | warning fetch_indicators
+progress select_profile
+profile_selected  [warning non_buildable_profile]
+progress genplanner
+zones → file(zones)
+[roads → file(roads)]                         если GenPlanner вернул дороги
+progress map_zones  [warning zones_skipped]
+[warning no_volume_target] [warning services_region_unknown]
+progress genbuilder
+progress assemble
+result → file(buildings) → [file × N от GenBuilder]
+[progress publish_scenario → scenario_published  [warning …]]   если публикация включена
+done
+```
+
+`run/stream` отдаёт то же самое без `load_history`, `chat_created` и `token`; его `done` — `{}`.
+
+**Что в событиях.**
+
+| Событие | Поля |
+|---|---|
+| `chat_created` | `chat_id`, `title` |
+| `token` | `content` — кусок текста, склеивать подряд |
+| `progress` | `stage`, `content` — готовая подпись стадии; у `select_profile` — причина выбора профиля |
+| `indicators` | `values` — десять индикаторов выбора: `indicator_id`, `name`, `profile_id`, `raw`, `normalized` |
+| `territory_indicators` | `total`, `highlights`, `sections` — см. «Витрина показателей» |
+| `profile_selected` | `profile_id`, `profile_name`, `indicator_id`, `reason`, `buildable`, `missing_indicator_ids`, `scoreboard` |
+| `zones` | `source: "genplanner"`, `content` — FeatureCollection с русскими атрибутами |
+| `roads` | `content` — FeatureCollection с русскими атрибутами |
+| `result` | `content` — FeatureCollection зданий с атрибутами GenBuilder, `summary` |
+| `file` | описание сохранённого слоя — см. «Слои на карте» |
+| `scenario_published` | `project_id`, `scenario_id`, `zones_written`, `buildings_written`, `buildings_failed`, `buildings_total`, `services_written`, `services_failed`, `unknown_zone_names`, `unknown_service_names`, `notified`, `notified_events`, `failed_stage`, `error` |
+| `warning` | `stage`, `detail` — машинный код или текст причины, `message` — текст для пользователя |
+| `error` | `stage`, `detail` — **строка** с JSON исходной ошибки, её надо распарсить |
+| `done` | `chat_id`, `assistant_message_id`; без запуска пайплайна `assistant_message_id` — `null` |
+
+Стадии `progress` и их подписи по умолчанию:
+
+| `stage` | `content` |
+|---|---|
+| `fetch_indicators` | Читаю показатели сценария |
+| `select_profile` | Выбираю профиль застройки |
+| `genplanner` | Генерирую территориальные зоны |
+| `map_zones` | Готовлю блоки для застройки |
+| `genbuilder` | Расставляю застройку |
+| `assemble` | Собираю результат |
+| `publish_scenario` | Сохраняю сценарий для расчёта оценок |
+
+`result.summary` — сводка по зданиям плюс то, что прислал в своём `summary` GenBuilder:
+
+```json
+{
+  "buildings": 312,
+  "buildings_by_zone": {"residential": 280, "business": 32},
+  "residents": 9400,
+  "living_area_m2": 282000,
+  "building_area_m2": 61000,
+  "services": [{"name": "school", "count": 2, "capacity": 1100}],
+  "profile": "жилая многоэтажная",
+  "blocks": {"...": "mapping_summary"}
+}
+```
+
+**Когда части событий не будет.** `warning` не останавливает прогон, `error` — останавливает,
+но `done` приходит всегда.
+
+| Ситуация | Что меняется |
+|---|---|
+| `skip_generation: true` | после зон — `progress assemble` «Застройка пропущена по запросу»; нет `result` и `file(buildings)` |
+| застраивать нечего (рекреация, сельхоз) | `warning genbuilder nothing_to_build`; нет `result` |
+| GenBuilder упал | `warning genbuilder`; нет `result` |
+| слой не сохранился | один `warning store_layer`, дальше ни одного `file`; сами `zones`/`roads`/`result` приходят |
+| публикация | идёт и в трёх первых случаях, если `publish` не выключен и есть зоны |
+| фатальная ошибка | `error`, затем `done` |
+
+После перезагрузки событий уже нет: карта перерисовывается по частям `kind: "file"` из истории
+чата (см. «Слои на карте»), а текст ответа — из самого сообщения: реплика модели, таблица
+«Показатели территории», причина выбора профиля, строка о сохранённом сценарии и тексты предупреждений.
 
 ## Слои на карте: контракт для фронтенда
 
@@ -86,7 +179,7 @@ zones  → file(name=zones)  → roads → file(name=roads) → … → result �
 | Застройка | `result` | `content` — FeatureCollection зданий, рядом `summary` | `buildings` |
 
 `roads` приходит, только если GenPlanner их вернул. `result` и `file(buildings)` не придут,
-если застройка пропущена (`skip_genbuilder`, нечего строить, GenBuilder упал) — тогда
+если застройка пропущена (`skip_generation`, нечего строить, GenBuilder упал) — тогда
 на карте остаются зоны и дороги, а причина приходит `warning`.
 
 **Событие `file`** — описание слоя, байтов в нём нет:
