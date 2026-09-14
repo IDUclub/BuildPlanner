@@ -87,7 +87,7 @@ class ChatService:
             if event["type"] == "profile_selected":
                 summary_lines.append(str(event.get("reason", "")))
             if event["type"] == "scenario_published":
-                scoring = "по нему считаются оценки" if event.get("notified") else "расчёт оценок не запущен"
+                scoring = _scoring_status(event)
                 summary_lines.append(
                     f"Результат сохранён сценарием {event.get('scenario_id')} "
                     f"в проекте {event.get('project_id')} — {scoring}."
@@ -150,3 +150,11 @@ class ChatService:
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Не удалось сохранить сообщение в чат {}: {}", chat_id, exc)
             return None
+
+
+def _scoring_status(published: dict[str, Any]) -> str:
+    if published.get("notified"):
+        return "по нему считаются оценки"
+    if published.get("notified_events"):
+        return "расчёт оценок запущен частично"
+    return "расчёт оценок не запущен"

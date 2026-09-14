@@ -48,3 +48,12 @@ async def test_reply_names_the_scenario_even_when_scoring_was_not_started():
     text = await _assistant_text({"project_id": 900, "scenario_id": 777, "notified": False})
     assert "сценарием 777" in text
     assert "расчёт оценок не запущен" in text
+
+
+@pytest.mark.asyncio
+async def test_reply_says_scoring_started_partly_when_the_broker_failed_halfway():
+    text = await _assistant_text(
+        {"project_id": 900, "scenario_id": 777, "notified": False, "notified_events": ["scenario_zones_updated"]}
+    )
+    assert "сценарием 777" in text
+    assert "расчёт оценок запущен частично" in text

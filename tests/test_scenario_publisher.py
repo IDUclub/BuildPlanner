@@ -112,6 +112,30 @@ class RoadsOnlyHandler(FakeHandler):
         return [{"physical_object_type_id": 52, "name": "Местная дорога"}]
 
 
+class ServiceRejectingHandler(FakeHandler):
+    """Urban API rejects one service type and accepts everything else."""
+
+    def __init__(self, rejected_service_type_id: int):
+        super().__init__()
+        self.rejected = rejected_service_type_id
+
+    async def post(self, path: str, json_data=None, params=None, headers=None) -> Any:
+        if path.endswith("/services") and json_data["service_type_id"] == self.rejected:
+            self.calls.append(("POST", path, json_data))
+            raise HTTPException(status_code=422, detail={"msg": "сервис не принят"})
+        return await super().post(path, json_data, params, headers)
+
+
+class NoGeometryIdHandler(FakeHandler):
+    """The physical object is created, but the response lacks its geometry."""
+
+    async def post(self, path: str, json_data=None, params=None, headers=None) -> Any:
+        response = await super().post(path, json_data, params, headers)
+        if path.endswith("/physical_objects"):
+            return {"physical_object": response["physical_object"]}
+        return response
+
+
 class FakeTokens:
     def __init__(self, user_id: str = "svc-1"):
         self.user_id = user_id
@@ -275,6 +299,29 @@ async def test_failed_buildings_are_counted_and_not_announced():
 
 
 @pytest.mark.asyncio
+async def test_rejected_service_keeps_its_building_and_the_other_services():
+    """The physical object and the building are written before the services; a lost service must not unwrite them."""
+    writer, handler = build_writer(ServiceRejectingHandler(rejected_service_type_id=22))
+    written = await writer.add_buildings(
+        7, territory_id=42, features=[_genbuilder_building(service=[{"Школа": 800.0}, {"Детский сад": 150.0}])]
+    )
+    assert (written.written, written.failed, written.object_type_ids) == (1, 0, [5])
+    assert (written.services_written, written.services_failed, written.service_type_ids) == (1, 1, [21])
+    assert handler.paths().count("/api/v1/scenarios/7/buildings") == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_geometry_id_loses_the_services_not_the_building():
+    writer, handler = build_writer(NoGeometryIdHandler())
+    written = await writer.add_buildings(
+        7, territory_id=42, features=[_genbuilder_building(service=[{"Школа": 800.0}])]
+    )
+    assert (written.written, written.failed, written.object_type_ids) == (1, 0, [5])
+    assert (written.services_written, written.services_failed) == (0, 1)
+    assert not handler.payloads("/services")
+
+
+@pytest.mark.asyncio
 async def test_missing_building_type_names_what_is_available():
     """Молча выбрать «какой-нибудь» тип нельзя — здания уедут не туда."""
     writer, _ = build_writer(RoadsOnlyHandler())
@@ -329,6 +376,34 @@ async def test_broker_failure_does_not_hide_the_written_data():
     publisher, _, _ = build_publisher(FakeHandler(fail_on="/api/broker/"))
     published = await publish(publisher)
     assert (published.zones_written, published.failed_stage, published.notified) == (1, "broker", False)
+    assert published.notified_events == []
+
+
+@pytest.mark.asyncio
+async def test_broker_failure_halfway_records_the_message_already_sent():
+    """By the time the objects message fails, the zones message has already started scoring."""
+    publisher, _, _ = build_publisher(FakeHandler(fail_on="scenario_objects_updated"))
+    published = await publish(publisher, buildings={"features": [_genbuilder_building()]})
+    assert (published.failed_stage, published.notified) == ("broker", False)
+    assert published.notified_events == ["scenario_zones_updated"]
+    assert (published.zones_written, published.buildings_written) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_announced_scenario_lists_every_message_sent():
+    publisher, _, _ = build_publisher()
+    published = await publish(publisher, buildings={"features": [_genbuilder_building()]})
+    assert published.notified is True
+    assert published.notified_events == ["scenario_zones_updated", "scenario_objects_updated"]
+
+
+@pytest.mark.asyncio
+async def test_rejected_services_are_counted_and_left_out_of_the_broker_message():
+    publisher, handler, _ = build_publisher(ServiceRejectingHandler(rejected_service_type_id=22))
+    published = await publish(publisher, buildings={"features": [_genbuilder_building(service=[{"Школа": 800.0}])]})
+    assert (published.buildings_written, published.services_written, published.services_failed) == (1, 0, 1)
+    assert published.failed_stage is None
+    assert not handler.payload("scenario_objects_updated").get("service_types")
 
 
 @pytest.mark.asyncio
@@ -384,6 +459,19 @@ async def test_project_without_region_fails_loudly():
     with pytest.raises(HTTPException) as exc_info:
         await publish(publisher)
     assert exc_info.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_region_is_required_even_when_the_container_is_cached():
+    """A cached container bypassed the region check, and the buildings were then dropped without a word."""
+    reader = FakeUrbanReader()
+    publisher, handler, _ = build_publisher(reader=reader)
+    await publish(publisher, buildings={"features": [_genbuilder_building()]})
+    reader.region_id = None
+    with pytest.raises(HTTPException) as exc_info:
+        await publish(publisher, buildings={"features": [_genbuilder_building()]})
+    assert exc_info.value.status_code == 422
+    assert handler.paths().count("/api/v1/scenarios/835") == 1
 
 
 # --------------------------------------------------------------------- сервисная учётка

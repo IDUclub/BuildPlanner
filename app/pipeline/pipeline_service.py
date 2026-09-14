@@ -25,7 +25,7 @@ from app.pipeline.buildings_summary import summarize_buildings
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.indicators_view import build_overview
 from app.pipeline.profile_selector import NoIndicatorValuesError, ProfileSelection, select_profile
-from app.pipeline.scenario_publisher import ScenarioPublisher
+from app.pipeline.scenario_publisher import BROKER_STAGE, OBJECTS_UPDATED_EVENT, ZONES_UPDATED_EVENT, ScenarioPublisher
 from app.pipeline.schema.pipeline_schema import PipelineResultSchema, ProfileSelectionSchema
 from app.pipeline.targets_policy import build_targets_by_zone, to_genbuilder_targets, zones_without_volume_target
 from app.pipeline.zone_mapper import MappingResult, map_zones_to_blocks
@@ -385,10 +385,21 @@ class PipelineService:
         return summary
 
 
+# What a broker message starts scoring for, in the words of the warning.
+SCORING_SCOPE: dict[str, str] = {
+    ZONES_UPDATED_EVENT: "функциональным зонам",
+    OBJECTS_UPDATED_EVENT: "зданиям и сервисам",
+}
+
+
 def _publication_warnings(published: dict[str, Any]) -> list[tuple[str, str]]:
     """Everything the user must know about a scenario that was saved only partly, as `(message, detail)`."""
     warnings: list[tuple[str, str]] = []
-    if published.get("failed_stage"):
+    if published.get("failed_stage") == BROKER_STAGE:
+        # The data is in Urban API, only the announcement is missing: «written partly»
+        # would send the user looking for losses that are not there.
+        warnings.append((_broker_failure_message(published), str(published.get("error") or BROKER_STAGE)))
+    elif published.get("failed_stage"):
         warnings.append(
             (
                 f"Сценарий {published.get('scenario_id')} создан, но записан не полностью "
@@ -403,6 +414,13 @@ def _publication_warnings(published: dict[str, Any]) -> list[tuple[str, str]]:
                 "buildings_failed",
             )
         )
+    if published.get("services_failed"):
+        warnings.append(
+            (
+                f"Не записано сервисов: {published['services_failed']} — здания, в которых они стоят, сохранены.",
+                "services_failed",
+            )
+        )
     if published.get("unknown_service_names"):
         warnings.append(
             (
@@ -412,3 +430,9 @@ def _publication_warnings(published: dict[str, Any]) -> list[tuple[str, str]]:
             )
         )
     return warnings
+
+
+def _broker_failure_message(published: dict[str, Any]) -> str:
+    sent = [SCORING_SCOPE.get(event, event) for event in published.get("notified_events") or []]
+    scoring = f"расчёт оценок запущен только по {', '.join(sent)}" if sent else "расчёт оценок не запущен"
+    return f"Данные сценария {published.get('scenario_id')} записаны, но сообщение в брокер не отправлено — {scoring}."

@@ -18,13 +18,20 @@ from app.clients.urban_api_client import UrbanApiClient
 from app.clients.urban_scenario_writer import BuildingsWritten, UrbanScenarioWriter
 from app.common.exceptions.http_exception import http_exception
 
+BROKER_STAGE = "broker"
+ZONES_UPDATED_EVENT = "scenario_zones_updated"
+OBJECTS_UPDATED_EVENT = "scenario_objects_updated"
+
 
 @dataclass
-class PublishedScenario:
+class PublishedScenario:  # pylint: disable=too-many-instance-attributes
     """Что получилось записать. `scenario_id` — тот, по которому придут оценки.
 
     `failed_stage` is set when the scenario was created but a later step failed:
     the scenario exists in Urban API and must stay findable by its id.
+
+    `notified` means every message the written data needs was sent; `notified_events`
+    lists the ones that were, so a broker failure halfway still says what is being scored.
     """
 
     project_id: int
@@ -34,9 +41,11 @@ class PublishedScenario:
     buildings_failed: int = 0
     buildings_total: int = 0
     services_written: int = 0
+    services_failed: int = 0
     unknown_zone_names: list[str] = field(default_factory=list)
     unknown_service_names: list[str] = field(default_factory=list)
     notified: bool = False
+    notified_events: list[str] = field(default_factory=list)
     failed_stage: str | None = None
     error: str | None = None
 
@@ -71,6 +80,14 @@ class ScenarioPublisher:
         buildings: dict[str, Any] | None,
     ) -> PublishedScenario:
         source_project_id, region_id = await self._urban.get_project_ref(source_scenario_id, user_token)
+        if region_id is None:
+            # Before the container cache: buildings need the region as well, and a cached
+            # container must not let the scenario be written without them unnoticed.
+            raise http_exception(
+                422,
+                "У проекта не определён регион — сохранить сценарий под сервисной учёткой нельзя",
+                _input={"project_id": source_project_id},
+            )
         project_id = await self._service_project(source_project_id, region_id, user_token)
         scenario_id = await self._writer.copy_scenario(
             source_scenario_id=source_scenario_id,
@@ -85,7 +102,7 @@ class ScenarioPublisher:
             await self._add_zones(published, zones, year)
             stage = "buildings"
             written = await self._add_buildings(published, region_id, buildings)
-            stage = "broker"
+            stage = BROKER_STAGE
             await self._notify(published, written)
         except HTTPException as exc:
             logger.warning("Scenario {} is written partially, failed at {}: {}", scenario_id, stage, exc.detail)
@@ -106,18 +123,19 @@ class ScenarioPublisher:
     async def _add_buildings(
         self,
         published: PublishedScenario,
-        region_id: int | None,
+        region_id: int,
         buildings: dict[str, Any] | None,
     ) -> BuildingsWritten:
         building_features = (buildings or {}).get("features") or []
         published.buildings_total = len(building_features)
-        if not building_features or region_id is None:
+        if not building_features:
             return BuildingsWritten()
 
         written = await self._writer.add_buildings(published.scenario_id, region_id, building_features)
         published.buildings_written = written.written
         published.buildings_failed = written.failed
         published.services_written = written.services_written
+        published.services_failed = written.services_failed
         published.unknown_service_names = written.unknown_service_names
         return written
 
@@ -125,6 +143,7 @@ class ScenarioPublisher:
         """Сообщения в брокер — последним шагом и только по тому, что реально записано."""
         if published.zones_written:
             await self._writer.notify_zones_updated(published.project_id, published.scenario_id)
+            published.notified_events.append(ZONES_UPDATED_EVENT)
         if published.buildings_written:
             await self._writer.notify_objects_updated(
                 published.project_id,
@@ -132,21 +151,16 @@ class ScenarioPublisher:
                 physical_object_types=written.object_type_ids,
                 service_types=written.service_type_ids,
             )
-        published.notified = bool(published.zones_written or published.buildings_written)
+            published.notified_events.append(OBJECTS_UPDATED_EVENT)
+        published.notified = bool(published.notified_events)
         if not published.notified:
             logger.warning("Сценарий {} пуст — в брокер не сообщаю", published.scenario_id)
 
-    async def _service_project(self, source_project_id: int, region_id: int | None, user_token: str) -> int:
+    async def _service_project(self, source_project_id: int, region_id: int, user_token: str) -> int:
         cached = self._service_projects.get(source_project_id)
         if cached is not None:
             return cached
 
-        if region_id is None:
-            raise http_exception(
-                422,
-                "У проекта не определён регион — создать сервисный проект нельзя",
-                _input={"project_id": source_project_id},
-            )
         geometry = await self._urban.get_project_geometry(source_project_id, user_token)
         if geometry is None:
             raise http_exception(

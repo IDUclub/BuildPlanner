@@ -432,6 +432,53 @@ async def test_lost_buildings_and_unknown_services_are_reported():
     assert {"buildings_failed", "unknown_service_types"} <= details
 
 
+def _publish_warnings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [event for event in events if event["type"] == "warning" and event["stage"] == "publish_scenario"]
+
+
+@pytest.mark.asyncio
+async def test_lost_services_are_reported_apart_from_buildings():
+    publisher = FakePublisher(published={"project_id": 900, "scenario_id": 777, "notified": True, "services_failed": 2})
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), publisher=publisher)
+    warnings = _publish_warnings(await collect(service))
+    lost = next(event for event in warnings if event["detail"] == "services_failed")
+    assert "2" in lost["message"]
+    assert "buildings_failed" not in {event["detail"] for event in warnings}
+
+
+@pytest.mark.asyncio
+async def test_broker_failure_says_the_data_is_written_and_what_is_scored():
+    """Only the announcement is missing: «written partly» would send the user looking for losses."""
+    publisher = FakePublisher(
+        published={
+            "project_id": 900,
+            "scenario_id": 777,
+            "notified": False,
+            "notified_events": ["scenario_zones_updated"],
+            "failed_stage": "broker",
+            "error": "broker unavailable",
+        }
+    )
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), publisher=publisher)
+    warning = next(
+        event for event in _publish_warnings(await collect(service)) if event["detail"] == "broker unavailable"
+    )
+    assert "777" in warning["message"]
+    assert "записаны" in warning["message"]
+    assert "не полностью" not in warning["message"]
+    assert "только по функциональным зонам" in warning["message"]
+
+
+@pytest.mark.asyncio
+async def test_broker_failure_before_any_message_says_scoring_did_not_start():
+    publisher = FakePublisher(
+        published={"project_id": 900, "scenario_id": 777, "notified": False, "failed_stage": "broker"}
+    )
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), publisher=publisher)
+    warning = next(event for event in _publish_warnings(await collect(service)) if event["detail"] == "broker")
+    assert "расчёт оценок не запущен" in warning["message"]
+
+
 @pytest.mark.asyncio
 async def test_result_summary_counts_what_was_built():
     events = await collect(build_service())

@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
+from fastapi import HTTPException
 from loguru import logger
 
 from app.clients.genbuilder_client import building_services
@@ -41,6 +42,7 @@ class BuildingsWritten:
     written: int = 0
     failed: int = 0
     services_written: int = 0
+    services_failed: int = 0
     object_type_ids: list[int] = field(default_factory=list)
     service_type_ids: list[int] = field(default_factory=list)
     unknown_service_names: list[str] = field(default_factory=list)
@@ -51,6 +53,15 @@ class _Service:
     type_id: int
     name: str
     capacity: int | None
+
+
+@dataclass(frozen=True)
+class _BuildingOutcome:
+    """A building that is written; its services may be written only partly."""
+
+    type_id: int
+    service_type_ids: list[int]
+    services_failed: int
 
 
 class UrbanScenarioWriter:
@@ -255,7 +266,8 @@ class UrbanScenarioWriter:
         реальный прогон — это тысячи зданий, и пускать их без предела нельзя.
 
         Сервис с именем, которого нет в справочнике, не пишется, но здание остаётся:
-        подставлять тип сервиса наугад нельзя.
+        подставлять тип сервиса наугад нельзя. Сервис, который Urban API не принял,
+        тоже не отменяет здание: физобъект и строение к этому моменту уже записаны.
         """
         type_ids = {kind: await self.building_type_id(kind) for kind in {_building_kind(f) for f in features}}
         catalogue = await self.service_type_ids() if any(building_services(f) for f in features) else {}
@@ -279,9 +291,10 @@ class UrbanScenarioWriter:
         return BuildingsWritten(
             written=len(written),
             failed=len(failures),
-            services_written=sum(len(service_type_ids) for _, service_type_ids in written),
-            object_type_ids=sorted({type_id for type_id, _ in written}),
-            service_type_ids=sorted({type_id for _, service_type_ids in written for type_id in service_type_ids}),
+            services_written=sum(len(outcome.service_type_ids) for outcome in written),
+            services_failed=sum(outcome.services_failed for outcome in written),
+            object_type_ids=sorted({outcome.type_id for outcome in written}),
+            service_type_ids=sorted({type_id for outcome in written for type_id in outcome.service_type_ids}),
             unknown_service_names=sorted(unknown),
         )
 
@@ -292,7 +305,7 @@ class UrbanScenarioWriter:
         type_id: int,
         feature: dict[str, Any],
         services: Sequence[_Service],
-    ) -> tuple[int, list[int]]:
+    ) -> _BuildingOutcome:
         properties = feature.get("properties") or {}
         async with self._semaphore:
             urban_object = await self._post(
@@ -319,9 +332,13 @@ class UrbanScenarioWriter:
                     "properties": {"generated_by": "buildplanner"},
                 },
             )
+            service_type_ids: list[int] = []
+            services_failed = 0
             if services:
-                await self._add_services(scenario_id, physical_object_id, urban_object, services)
-        return type_id, [service.type_id for service in services]
+                service_type_ids, services_failed = await self._add_services(
+                    scenario_id, physical_object_id, urban_object, services
+                )
+        return _BuildingOutcome(type_id, service_type_ids, services_failed)
 
     async def _add_services(
         self,
@@ -329,26 +346,45 @@ class UrbanScenarioWriter:
         physical_object_id: int,
         urban_object: dict[str, Any],
         services: Sequence[_Service],
-    ) -> None:
+    ) -> tuple[list[int], int]:
+        """Service types written and the number of services lost.
+
+        The building is already in the scenario by now, so a lost service is counted, not raised:
+        raising would report the building as failed and drop its type from the broker message.
+        """
         geometry_id = (urban_object.get("object_geometry") or {}).get("object_geometry_id")
         if not isinstance(geometry_id, int):
-            raise http_exception(502, "Urban API не вернул object_geometry_id", _detail=urban_object)
-
-        for service in services:
-            await self._post(
-                f"/api/v1/scenarios/{scenario_id}/services",
-                {
-                    "physical_object_id": physical_object_id,
-                    "is_scenario_physical_object": True,
-                    "object_geometry_id": geometry_id,
-                    "is_scenario_geometry": True,
-                    "service_type_id": service.type_id,
-                    "name": service.name,
-                    "capacity": service.capacity,
-                    "is_capacity_real": False,
-                    "properties": {"generated_by": "buildplanner"},
-                },
+            logger.warning(
+                "Urban API returned no object_geometry_id for physical object {}, services skipped: {}",
+                physical_object_id,
+                [service.name for service in services],
             )
+            return [], len(services)
+
+        written: list[int] = []
+        for service in services:
+            try:
+                await self._post(
+                    f"/api/v1/scenarios/{scenario_id}/services",
+                    {
+                        "physical_object_id": physical_object_id,
+                        "is_scenario_physical_object": True,
+                        "object_geometry_id": geometry_id,
+                        "is_scenario_geometry": True,
+                        "service_type_id": service.type_id,
+                        "name": service.name,
+                        "capacity": service.capacity,
+                        "is_capacity_real": False,
+                        "properties": {"generated_by": "buildplanner"},
+                    },
+                )
+            except HTTPException as exc:
+                logger.warning(
+                    "Service {} of physical object {} is not written: {}", service.name, physical_object_id, exc.detail
+                )
+                continue
+            written.append(service.type_id)
+        return written, len(services) - len(written)
 
     # ------------------------------------------------------------------ брокер
 
