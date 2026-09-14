@@ -35,7 +35,13 @@ class ChatService:
         self._llm = llm_client
         self._storage = chat_storage
 
-    async def stream(self, scenario_id: int, turn: ChatTurnDTO, token: str) -> AsyncIterator[dict[str, Any]]:
+    async def stream(
+        self,
+        scenario_id: int,
+        turn: ChatTurnDTO,
+        token: str,
+        base_url: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         user_id = extract_user_id(token)
         chat_id = turn.chat_id
         history: list[dict[str, str]] = []
@@ -76,8 +82,12 @@ class ChatService:
 
         options = self._merge_options(turn.options, draft.get("patch") or {})
         summary_lines: list[str] = [reply]
+        file_parts: list[dict[str, Any]] = []
 
-        async for event in self._pipeline.stream(scenario_id, token, options):
+        async for event in self._pipeline.stream(scenario_id, token, options, base_url=base_url):
+            if event["type"] == "file" and event.get("url"):
+                # Сами слои в историю не влезут — кладём ссылки, по ним фронтенд перерисует карту.
+                file_parts.append(ChatStorageClient.file_part(event))
             if event["type"] == "territory_indicators":
                 # В текст ответа идёт только короткая сводка: полная таблица уехала
                 # событием, её рисует фронтенд, и дублировать её в сообщение незачем.
@@ -104,6 +114,7 @@ class ChatService:
             # Ручные переопределения должны пережить перезагрузку чата:
             # из текста реплики их потом не восстановить надёжно.
             metadata={"options": options.model_dump(exclude_none=True)},
+            extra_parts=file_parts,
         )
         yield events.done(chat_id, message_id)
 
@@ -140,13 +151,13 @@ class ChatService:
         text: str,
         user_id: str | None,
         metadata: dict[str, Any] | None = None,
+        extra_parts: list[dict[str, Any]] | None = None,
     ) -> str | None:
         if not (self._storage and chat_id and text):
             return None
+        parts = [ChatStorageClient.text_part(text), *(extra_parts or [])]
         try:
-            return await self._storage.add_message(
-                chat_id, role, [ChatStorageClient.text_part(text)], user_id, metadata=metadata
-            )
+            return await self._storage.add_message(chat_id, role, parts, user_id, metadata=metadata)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Не удалось сохранить сообщение в чат {}: {}", chat_id, exc)
             return None

@@ -6,6 +6,7 @@ from app.common.api_handlers.json_api_handler import AsyncJsonApiHandler
 from app.common.auth.service_token import ServiceTokenProvider
 
 CHAT_HISTORY_PREFIX = "/api/v1/chat_history"
+FILE_PART_FIELDS = ("url", "name", "title", "filename", "mime_type", "source_service")
 
 
 class ChatStorageClient:
@@ -74,6 +75,12 @@ class ChatStorageClient:
     @staticmethod
     def text_part(text: str) -> dict[str, Any]:
         return {"kind": "text", "payload": {"text": text}}
+
+    @staticmethod
+    def file_part(descriptor: dict[str, Any]) -> dict[str, Any]:
+        """Ссылка на слой из события `file`: в историю ложится адрес, а не сами байты."""
+        payload = {key: descriptor[key] for key in FILE_PART_FIELDS if descriptor.get(key) is not None}
+        return {"kind": "file", "payload": payload}
 
     @staticmethod
     def build_llm_history(chat: dict[str, Any]) -> list[dict[str, str]]:

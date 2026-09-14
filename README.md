@@ -46,6 +46,7 @@ make test     # pytest
 | `GET` | `/buildplanner/scenarios/{id}/indicators` | показатели проекта таблицей, без генерации |
 | `GET` | `/buildplanner/reference/indicators` | какие индикаторы участвуют в выборе |
 | `GET` | `/buildplanner/reference/profiles` | профили и их застройка в GenBuilder |
+| `GET` | `/buildplanner/files/{slot}/{result_id}` | слой прогона из хранилища — по ссылке из события `file` |
 | `GET` | `/buildplanner/health`, `/buildplanner/logs/log_file` | служебные |
 
 Все прогоны требуют `Authorization: Bearer <keycloak_token>` — токен прокидывается
@@ -66,14 +67,94 @@ make test     # pytest
 HTTP-статус потока всегда `200`: фатальная ошибка приходит событием `error` внутри потока.
 Если GenBuilder упал, зоны всё равно уже отданы — это полезный частичный результат, а не провал.
 
+## Слои на карте: контракт для фронтенда
+
+Генерация показывается на карте дважды: сразу — из самого потока, и после перезагрузки
+чата — по ссылкам из истории. Поток сам по себе не переживает перезагрузку, поэтому каждый
+слой ещё и кладётся в хранилище, а в поток и в сообщение ассистента уходит ссылка на него.
+
+**Живой поток.** Слой приходит целиком, а сразу за ним — `file` с ссылкой на его копию:
+
+```
+zones  → file(name=zones)  → roads → file(name=roads) → … → result → file(name=buildings) → scenario_published
+```
+
+| Слой | Живое событие | Где GeoJSON | `file.name` |
+|---|---|---|---|
+| Территориальные зоны | `zones` | `content` — FeatureCollection зон GenPlanner | `zones` |
+| Дороги | `roads` | `content` — FeatureCollection дорог | `roads` |
+| Застройка | `result` | `content` — FeatureCollection зданий, рядом `summary` | `buildings` |
+
+`roads` приходит, только если GenPlanner их вернул. `result` и `file(buildings)` не придут,
+если застройка пропущена (`skip_genbuilder`, нечего строить, GenBuilder упал) — тогда
+на карте остаются зоны и дороги, а причина приходит `warning`.
+
+**Событие `file`** — описание слоя, байтов в нём нет:
+
+```json
+{
+  "type": "file",
+  "name": "zones",
+  "title": "Территориальные зоны",
+  "role": "result",
+  "url": "https://<PUBLIC_BASE_URL>/buildplanner/files/zones/3f2c…e1",
+  "download_url": null,
+  "filename": "zones.geojson",
+  "mime_type": "application/geo+json",
+  "source_service": "buildplanner"
+}
+```
+
+Файлы, которые отдал сам GenBuilder, приходят тем же событием с `source_service: "genbuilder"`.
+
+**Атрибуты объектов.** Зоны и дороги приходят с русскими ключами — панель атрибутов
+показывает их как есть. Правила те же, что в чате GenPlanner; сохранённые файлы совпадают
+с потоком. Синхронный `POST …/run`, GenBuilder и запись в Urban API работают с исходными
+машинными свойствами GenPlanner.
+
+| Слой | Свойство | Значение |
+|---|---|---|
+| Зоны | `Территориальная зона` | жилая, рекреационная, промышленная, общественно-деловая, транспортная, сельскохозяйственная, специального назначения; «не определена», если вид неизвестен |
+| Зоны | `Сгенерирована` | `Да` / `Нет`; нет ключа — GenPlanner не сообщил |
+| Зоны | `Идентификатор исходной зоны` | только у зон, взятых из существующего зонирования |
+| Дороги | `Название`, `Адрес` | только у существующих дорог |
+| Дороги | `Ширина, м` | число |
+| Дороги | `physical_object_type_id` | как в Urban API, для стиля |
+| Дороги | `road_lvl` | без перевода: `regulated highway`, `local road, level N`, `user_roads` |
+| Дороги | `road_class` | для легенды: `highway`, `street`, `existing`; нет ключа — уровень незнакомый |
+
+Застройка (`result`, `file(buildings)`) не переводится: ключи остаются машинными, а подписи
+и справочники значений фронт берёт у GenBuilder — `GET /generate/properties_schema`.
+Своя копия подписей здесь разошлась бы с ней при первом изменении в GenBuilder.
+
+**История чата.** Сообщение ассистента в ChatStorage — текст первой частью, затем по части
+`{"kind": "file", "payload": {...}}` на каждый слой; в `payload` те же поля, что в событии
+`file`, кроме пустых. Чтобы перерисовать карту, фронт берёт части `kind == "file"`,
+раскладывает их по `name` и запрашивает `url` с тем же `Authorization: Bearer <token>`.
+Ответ — `application/geo+json`, тот же FeatureCollection, что был в потоке. Неизвестный слой
+или прогон — `404`, недоступное хранилище — `502`.
+
+**Если слой не сохранился**, в потоке будет один `warning` со `stage: "store_layer"`, а
+событий `file` до конца прогона больше не будет. Это не ошибка: карта из потока уже
+нарисована, пропадёт только перерисовка после перезагрузки.
+
+**Хранилище.** MinIO, если заданы все четыре `MINIO_*` (частичный набор — ошибка
+конфигурации, сервис запустится без хранилища и напишет это в лог); если не задан ни один —
+каталог `OUTPUTS_DIR` на диске, что годится только для локальной разработки. MinIO живёт
+в закрытой сети, поэтому файлы отдаются через сам сервис, а не прямыми ссылками в бакет.
+`MINIO_ADDRESS` — адрес S3 API вида `http://host:9000` (не веб-консоли); схема `https://` включает TLS.
+Ссылки строятся от `PUBLIC_BASE_URL` — адреса сервиса, как его видит браузер; без него
+берётся адрес входящего запроса, который за прокси бывает внутренним.
+
 ## Раскладка
 
 ```
 app/
   clients/            urban_api · urban_scenario_writer · genplanner · genbuilder
-  common/             auth · chat_storage · llm · api_handlers · constants · exceptions · logging
+  common/             auth · chat_storage · object_storage · llm · api_handlers · constants ·
+                      exceptions · logging
   pipeline/           profile_selector · zone_mapper · targets_policy · pipeline_service ·
-                      indicators_view · scenario_publisher · events
+                      indicators_view · scenario_publisher · geo_layers · events
   chat/               chat_service · agent/prompts
   system/             health · logs
 ```

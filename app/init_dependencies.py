@@ -16,9 +16,30 @@ from app.common.auth.service_token import ServiceTokenProvider
 from app.common.chat_storage.chat_storage_client import ChatStorageClient
 from app.common.llm.vllm_chat_client import VLLMChatClient
 from app.common.logging.init_logger import init_logger
+from app.common.object_storage.object_storage import ObjectStorage, ObjectStorageError, build_object_storage
+from app.pipeline.geo_layers import LayerStore
 from app.pipeline.pipeline_service import PipelineService
 from app.pipeline.scenario_publisher import ScenarioPublisher
 from app.settings import Settings
+
+
+def _build_object_storage(settings: Settings) -> ObjectStorage | None:
+    """Без хранилища сервис работает, но слои прогона не переживут перезагрузку чата."""
+    try:
+        storage = build_object_storage(
+            address=settings.minio_address,
+            access_key=settings.minio_access_key,
+            secret_key=settings.minio_secret_key,
+            bucket=settings.minio_bucket_name,
+            region=settings.minio_region,
+            outputs_dir=settings.outputs_dir,
+        )
+    except (ObjectStorageError, ImportError) as exc:
+        logger.error("Хранилище слоёв не собрано, в историю чата слои не попадут: {}", exc)
+        return None
+    if not settings.public_base_url:
+        logger.warning("PUBLIC_BASE_URL не задан: ссылки на слои строятся от адреса входящего запроса")
+    return storage
 
 
 def init_dependencies(app: FastAPI) -> None:
@@ -60,12 +81,18 @@ def init_dependencies(app: FastAPI) -> None:
     else:
         logger.warning("Запись в Urban API выключена: оценки по сгенерированному сценарию считаться не будут")
 
+    app.state.object_storage = _build_object_storage(settings)
     app.state.pipeline_service = PipelineService(
         urban_client=urban_client,
         genplanner_client=genplanner_client,
         genbuilder_client=genbuilder_client,
         cache_ttl_seconds=settings.genplanner_cache_ttl_seconds,
         publisher=publisher,
+        layer_store=(
+            LayerStore(app.state.object_storage, settings.public_base_url)
+            if app.state.object_storage is not None
+            else None
+        ),
     )
 
     llm_client = None

@@ -4,19 +4,36 @@ import pytest
 
 from app.chat.chat_service import ChatService
 from app.chat.dto.chat_dto import ChatTurnDTO
+from app.pipeline.geo_layers import layer_descriptor
 
 
 class FakePipeline:
     def __init__(self, published: dict[str, Any]):
         self.published = published
 
-    async def stream(self, *_args: Any):
+    async def stream(self, *_args: Any, **_kwargs: Any):
         yield {"type": "scenario_published", **self.published}
+
+
+class FilesPipeline:
+    """Прогон, который отдал зоны и застройку ссылками на хранилище."""
+
+    def __init__(self):
+        self.base_url: str | None = None
+
+    async def stream(self, *_args: Any, base_url: str | None = None, **_kwargs: Any):
+        self.base_url = base_url
+        for slot in ("zones", "buildings"):
+            yield {
+                "type": "file",
+                **layer_descriptor(slot, "a" * 32, request_base_url=base_url),
+            }
 
 
 class FakeStorage:
     def __init__(self):
         self.messages: list[tuple[str, str]] = []
+        self.parts: dict[str, list[dict[str, Any]]] = {}
 
     async def create_chat(self, *_args: Any, **_kwargs: Any) -> str:
         return "chat-1"
@@ -25,6 +42,7 @@ class FakeStorage:
         self, _chat_id: str, role: str, parts: list[dict[str, Any]], *_args: Any, **_kwargs: Any
     ) -> str:
         self.messages.append((role, parts[0]["payload"]["text"]))
+        self.parts[role] = parts
         return "message-1"
 
 
@@ -57,3 +75,19 @@ async def test_reply_says_scoring_started_partly_when_the_broker_failed_halfway(
     )
     assert "сценарием 777" in text
     assert "расчёт оценок запущен частично" in text
+
+
+@pytest.mark.asyncio
+async def test_layers_are_saved_to_history_as_links():
+    """После перезагрузки чата карту перерисовывают по ссылкам из сообщения, а не по потоку."""
+    storage, pipeline = FakeStorage(), FilesPipeline()
+    service = ChatService(pipeline, llm_client=None, chat_storage=storage)
+    turn = ChatTurnDTO(user_query="создай мастер-план территории")
+    async for _ in service.stream(835, turn, "token", base_url="http://buildplanner/"):
+        pass
+    assert pipeline.base_url == "http://buildplanner/"
+    files = [part for part in storage.parts["assistant"] if part["kind"] == "file"]
+    assert [part["payload"]["name"] for part in files] == ["zones", "buildings"]
+    assert files[0]["payload"]["url"] == f"http://buildplanner/buildplanner/files/zones/{'a' * 32}"
+    assert "download_url" not in files[0]["payload"]
+    assert storage.parts["assistant"][0]["kind"] == "text"

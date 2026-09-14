@@ -15,6 +15,7 @@ STAGE_MAP_ZONES = "map_zones"
 STAGE_GENBUILDER = "genbuilder"
 STAGE_ASSEMBLE = "assemble"
 STAGE_PUBLISH = "publish_scenario"
+STAGE_STORE_LAYER = "store_layer"
 
 STAGE_TITLES: dict[str, str] = {
     STAGE_FETCH_INDICATORS: "Читаю показатели сценария",
@@ -58,6 +59,11 @@ def roads(content: dict[str, Any]) -> dict[str, Any]:
 
 def result(content: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
     return {"type": "result", "content": content, "summary": summary}
+
+
+def file(descriptor: dict[str, Any]) -> dict[str, Any]:
+    """Ссылка на сохранённый слой: по ней фронтенд перерисует карту из истории чата."""
+    return {"type": "file", **descriptor}
 
 
 def scenario_published(published: dict[str, Any]) -> dict[str, Any]:

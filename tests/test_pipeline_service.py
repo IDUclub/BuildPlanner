@@ -1,5 +1,6 @@
 """Оркестрация целиком, на подставных клиентах: важен порядок событий и деградация."""
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -8,7 +9,9 @@ from fastapi import HTTPException
 
 from app.clients.urban_api_client import UrbanApiClient
 from app.common.constants.pipeline_constants import SELECTION_INDICATOR_IDS
+from app.common.object_storage.object_storage import LocalStorage, ObjectStorageError
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
+from app.pipeline.geo_layers import LayerStore
 from app.pipeline.pipeline_service import PipelineService
 
 
@@ -505,6 +508,99 @@ async def test_publication_can_be_turned_off_per_run():
     types = [event["type"] for event in await collect(service, PipelineOptionsDTO(publish=False))]
     assert "scenario_published" not in types
     assert publisher.received is None
+
+
+class BrokenStorage(LocalStorage):
+    def put_json(self, payload, object_key):
+        raise ObjectStorageError("бакет недоступен")
+
+
+def _files(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [event for event in events if event["type"] == "file"]
+
+
+@pytest.mark.asyncio
+async def test_every_layer_is_stored_right_after_it_is_streamed(tmp_path):
+    """Живой поток рисует карту сразу, а ссылки нужны, чтобы перерисовать её из истории."""
+    storage = LocalStorage(str(tmp_path))
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), layer_store=LayerStore(storage))
+    events = [event async for event in service.stream(1, "token", PipelineOptionsDTO(), base_url="http://bp/")]
+    types = [event["type"] for event in events]
+
+    assert [event["name"] for event in _files(events)] == ["zones", "roads", "buildings"]
+    assert types.index("zones") < types.index("file") < types.index("roads")
+    assert types.index("result") < len(types) - 1 - types[::-1].index("file")
+    result_id = _files(events)[0]["url"].rsplit("/", 1)[-1]
+    assert _files(events)[0]["url"] == f"http://bp/buildplanner/files/zones/{result_id}"
+    assert storage.exists(f"{result_id}/buildings.geojson")
+
+
+class FakeGenPlannerWithRoads(FakeGenPlanner):
+    ROADS = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [[30.0, 60.0], [30.01, 60.0]]},
+                "properties": {"road_lvl": "local road, level 1", "roads_width": 6.0},
+            }
+        ],
+    }
+
+    async def run_func_generation(self, **kwargs) -> dict[str, Any]:
+        return {**await super().run_func_generation(**kwargs), "roads": self.ROADS}
+
+
+def _stored(storage: LocalStorage, url: str, name: str) -> dict[str, Any]:
+    result_id = url.rsplit("/", 1)[-1]
+    return json.loads(b"".join(storage.open_stream(f"{result_id}/{name}.geojson")))
+
+
+@pytest.mark.asyncio
+async def test_map_gets_russian_attributes_while_the_pipeline_keeps_raw_zones(tmp_path):
+    storage = LocalStorage(str(tmp_path))
+    service = PipelineService(FakeUrban(), FakeGenPlannerWithRoads(), FakeGenBuilder(), layer_store=LayerStore(storage))
+    events = [event async for event in service.stream(1, "token", PipelineOptionsDTO(), base_url="http://bp/")]
+    by_type = {event["type"]: event for event in events}
+
+    zone_labels = [feature["properties"] for feature in by_type["zones"]["content"]["features"]]
+    assert zone_labels == [{"Территориальная зона": "жилая"}, {"Территориальная зона": "рекреационная"}]
+    road = by_type["roads"]["content"]["features"][0]["properties"]
+    assert road == {"Ширина, м": 6.0, "road_lvl": "local road, level 1", "road_class": "street"}
+
+    files = {event["name"]: event["url"] for event in _files(events)}
+    assert _stored(storage, files["zones"], "zones") == by_type["zones"]["content"]
+    assert _stored(storage, files["roads"], "roads") == by_type["roads"]["content"]
+    assert "result" in by_type, "GenBuilder должен получить блоки из исходных зон"
+
+    result = await PipelineService(FakeUrban(), FakeGenPlannerWithRoads(), FakeGenBuilder()).run(
+        1, "token", PipelineOptionsDTO()
+    )
+    assert result.zones["features"][0]["properties"] == {"territory_zone": 13}
+    assert result.roads["features"][0]["properties"]["roads_width"] == 6.0
+
+
+@pytest.mark.asyncio
+async def test_storage_failure_warns_once_and_keeps_the_run(tmp_path):
+    layer_store = LayerStore(BrokenStorage(str(tmp_path)))
+    service = PipelineService(FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), layer_store=layer_store)
+    events = await collect(service)
+    types = [event["type"] for event in events]
+
+    assert "result" in types
+    assert "error" not in types
+    assert not _files(events)
+    assert len([event for event in events if event["type"] == "warning" and event["stage"] == "store_layer"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_synchronous_run_does_not_store_layers(tmp_path):
+    """У синхронного ответа нет истории — писать слои незачем."""
+    service = PipelineService(
+        FakeUrban(), FakeGenPlanner(), FakeGenBuilder(), layer_store=LayerStore(LocalStorage(str(tmp_path)))
+    )
+    await service.run(1, "token", PipelineOptionsDTO())
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
+from uuid import uuid4
 
 from fastapi import HTTPException
 from loguru import logger
@@ -23,8 +24,10 @@ from app.common.exceptions.http_exception import http_exception
 from app.pipeline import events
 from app.pipeline.buildings_summary import summarize_buildings
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
+from app.pipeline.geo_layers import SLOT_BUILDINGS, SLOT_ROADS, SLOT_TITLES, SLOT_ZONES, LayerStore
 from app.pipeline.indicators_view import build_overview
 from app.pipeline.profile_selector import NoIndicatorValuesError, ProfileSelection, select_profile
+from app.pipeline.result_localization import localize_roads, localize_zones
 from app.pipeline.scenario_publisher import BROKER_STAGE, OBJECTS_UPDATED_EVENT, ZONES_UPDATED_EVENT, ScenarioPublisher
 from app.pipeline.schema.pipeline_schema import PipelineResultSchema, ProfileSelectionSchema
 from app.pipeline.targets_policy import build_targets_by_zone, to_genbuilder_targets, zones_without_volume_target
@@ -32,7 +35,16 @@ from app.pipeline.zone_mapper import MappingResult, map_zones_to_blocks
 
 
 @dataclass
-class PipelineRun:
+class LayerTarget:
+    """Куда пишутся слои прогона. Синхронному `run()` это не нужно — у него нет истории чата."""
+
+    result_id: str = field(default_factory=lambda: uuid4().hex)
+    enabled: bool = True
+    base_url: str | None = None
+
+
+@dataclass
+class PipelineRun:  # pylint: disable=too-many-instance-attributes  # мешок состояния, а не объект с поведением
     """Состояние одного прогона: наполняется по ходу потока событий."""
 
     scenario_id: int
@@ -47,6 +59,7 @@ class PipelineRun:
     mapping_summary: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     failure: HTTPException | None = None
+    layers: LayerTarget = field(default_factory=LayerTarget)
 
 
 class PipelineService:
@@ -57,19 +70,21 @@ class PipelineService:
         genbuilder_client: GenBuilderClient,
         cache_ttl_seconds: int = 3600,
         publisher: ScenarioPublisher | None = None,
+        layer_store: LayerStore | None = None,
     ):
         self._urban = urban_client
         self._genplanner = genplanner_client
         self._genbuilder = genbuilder_client
         self._cache_ttl = cache_ttl_seconds
         self._publisher = publisher
+        self._layer_store = layer_store
         self._zones_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ публичный API
 
     async def run(self, scenario_id: int, token: str, options: PipelineOptionsDTO) -> PipelineResultSchema:
         """Синхронный прогон. Ошибки поднимаются как HTTP, а не прячутся в поток."""
-        run = PipelineRun(scenario_id=scenario_id)
+        run = PipelineRun(scenario_id=scenario_id, layers=LayerTarget(enabled=False))
         async for _ in self.stream(scenario_id, token, options, run):
             pass
         if run.failure is not None:
@@ -94,9 +109,14 @@ class PipelineService:
         token: str,
         options: PipelineOptionsDTO,
         run: PipelineRun | None = None,
+        base_url: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Основной путь. Фатальная ошибка приходит событием `error`, а не разрывом потока."""
+        """Основной путь. Фатальная ошибка приходит событием `error`, а не разрывом потока.
+
+        `base_url` — адрес входящего запроса: из него строятся ссылки на слои, если не задан `PUBLIC_BASE_URL`.
+        """
         run = run or PipelineRun(scenario_id=scenario_id)
+        run.layers.base_url = base_url or run.layers.base_url
         try:
             async for event in self._execute(run, token, options):
                 yield event
@@ -159,9 +179,16 @@ class PipelineService:
         generated = await self._generate_zones(run, token, options, selection)
         run.zones = generated.get("zones") or {"type": "FeatureCollection", "features": []}
         run.roads = generated.get("roads")
-        yield events.zones(run.zones)
+        # Фронтенду — русские атрибуты; блоки, GenBuilder и публикация читают исходные `run.zones`.
+        zones_view = localize_zones(run.zones)
+        yield events.zones(zones_view)
+        async for event in self._emit_layer(run, SLOT_ZONES, zones_view):
+            yield event
         if run.roads:
-            yield events.roads(run.roads)
+            roads_view = localize_roads(run.roads)
+            yield events.roads(roads_view)
+            async for event in self._emit_layer(run, SLOT_ROADS, roads_view):
+                yield event
 
         # --- блоки
         yield events.progress(events.STAGE_MAP_ZONES)
@@ -241,9 +268,34 @@ class PipelineService:
         run.buildings = built.get("buildings") or built.get("content") or built
         yield events.progress(events.STAGE_ASSEMBLE)
         yield events.result(run.buildings, self._build_summary(run, built))
+        async for event in self._emit_layer(run, SLOT_BUILDINGS, run.buildings):
+            yield event
 
         for descriptor in built.get("files", []) or []:
-            yield {"type": "file", **descriptor, "source_service": descriptor.get("source_service", "genbuilder")}
+            yield events.file({**descriptor, "source_service": descriptor.get("source_service", "genbuilder")})
+
+    async def _emit_layer(self, run: PipelineRun, slot: str, content: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        """Сохраняет только что отданный слой, чтобы фронтенд перерисовал его из истории чата.
+
+        Не фатально: в живом потоке слой уже у фронтенда, теряется только перерисовка после
+        перезагрузки. После первого сбоя остальные слои прогона не пишем — предупреждение одно.
+        """
+        layers = run.layers
+        if self._layer_store is None or not layers.enabled:
+            return
+        try:
+            descriptor = await self._layer_store.store(slot, layers.result_id, content, layers.base_url)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            layers.enabled = False
+            message = (
+                f"Слой «{SLOT_TITLES[slot]}» не сохранён: после перезагрузки чата "
+                "результат этого прогона на карте не появится."
+            )
+            run.warnings.append(message)
+            logger.warning("Слой {} прогона {} не сохранён: {}", slot, layers.result_id, exc)
+            yield events.warning(events.STAGE_STORE_LAYER, str(exc)[:500], message)
+            return
+        yield events.file(descriptor)
 
     async def _emit_published(
         self,

@@ -80,6 +80,33 @@ ZONE_NAME_TO_PROFILE: Final[dict[str, int]] = {
     "базовая": 8,
 }
 
+# Вид территориальной зоны (`TerritoryZoneKind` GenPlanner) по id зоны — для подписей на карте.
+# 8 «базовая» вида не имеет: территориальной зоной в результате GenPlanner она не приходит.
+TERRITORY_ZONE_KIND_BY_ID: Final[dict[int, str]] = {
+    1: "residential",
+    2: "recreation",
+    3: "special",
+    4: "industrial",
+    5: "agriculture",
+    6: "transport",
+    7: "business",
+    10: "residential",
+    11: "residential",
+    12: "residential",
+    13: "residential",
+}
+
+# У GenPlanner `business` — «деловая»; здесь, как в профилях и у GenBuilder, «общественно-деловая».
+TERRITORY_ZONE_KIND_NAMES: Final[dict[str, str]] = {
+    "residential": "жилая",
+    "recreation": "рекреационная",
+    "special": "специального назначения",
+    "industrial": "промышленная",
+    "agriculture": "сельскохозяйственная",
+    "transport": "транспортная",
+    "business": "общественно-деловая",
+}
+
 # --- 3. Таксономия GenBuilder ---------------------------------------------------------------
 
 # Зона GenBuilder + группа этажности. `None` означает, что зона не застраивается:
