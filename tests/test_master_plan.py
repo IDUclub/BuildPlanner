@@ -87,5 +87,30 @@ def test_summary_text_reports_buildings_and_queue():
     assert "пожарное депо" in text
 
 
+def test_summary_text_names_served_residents_not_provision_share():
+    """`provided_per_period` — обеспеченное сервисами население, а не доля обеспеченности."""
+    summary = build_summary(buildings=None, published=None, schedule=SCHEDULE, provision=None)
+    text = summary_text(summary)
+    assert "Обеспечено сервисами жителей к концу стройки — 0.86." in text
+
+
+def test_summary_text_does_not_call_building_teps_a_service_share():
+    """SIRTEP кладёт в `provision` и ТЭПы застройки, и обеспеченность — общей подписи им не дать."""
+    provision = {
+        "periods": [1],
+        "provision": [{"Количество людей (человек)": 20790.0, "Обеспеченность Школа (%)": 62.0}],
+        "unbuilt_services": ["Детская площадка"],
+    }
+    text = summary_text(build_summary(buildings=None, published=None, schedule=SCHEDULE, provision=provision))
+    assert "Показатели к концу стройки:" in text
+    assert "Количество людей (человек) — 20 790" in text  # разряды разделяются тонким пробелом
+
+
+def test_summary_text_reports_zero_provision_not_absent_buildings():
+    """`unbuilt_services` — нулевая обеспеченность за все периоды; сервис при этом мог быть построен."""
+    text = summary_text(build_summary(buildings=None, published=None, schedule=SCHEDULE, provision=PROVISION))
+    assert "Нулевая обеспеченность за все периоды: пожарное депо." in text
+
+
 def test_summary_text_is_empty_when_there_is_nothing_to_say():
     assert summary_text(build_summary(buildings=None, published=None, schedule=None, provision=None)) == ""

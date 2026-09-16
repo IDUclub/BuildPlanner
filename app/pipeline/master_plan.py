@@ -2,8 +2,8 @@
 
 Сырые ответы SIRTEP уходят фронтенду как есть — по ним раскрашивается карта.
 Здесь из них собирается то, что читает человек: за сколько периодов всё построено,
-сколько домов и сервисов в каждом, чем кончилась обеспеченность и что в горизонт
-не влезло.
+сколько домов и сервисов в каждом, сколько жителей обеспечено сервисами и у каких
+типов сервисов обеспеченность так и осталась нулевой.
 """
 
 from typing import Any, Sequence
@@ -64,7 +64,13 @@ def schedule_digest(answer: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def provision_digest(answer: dict[str, Any] | None) -> dict[str, Any]:
-    """ТЭПы: обеспеченность по периодам и то, что в горизонт не влезло."""
+    """ТЭПы по периодам: показатели застройки и обеспеченность по типам сервисов.
+
+    Ключи `provision` самоописательны и приходят от SIRTEP уже по-русски: наряду с
+    «Обеспеченность X (%)» там лежат жилая площадь, число домов и число жителей.
+    `unbuilt_services` — типы сервисов, у которых обеспеченность равна нулю во всех
+    периодах; построены они при этом могли быть.
+    """
     payload = answer or {}
     by_period = [row for row in (payload.get("provision") or []) if isinstance(row, dict)]
     final = by_period[-1] if by_period else {}
@@ -133,7 +139,7 @@ def _schedule_block(summary: dict[str, Any]) -> str:
 
     provided = schedule.get("provided_final")
     if isinstance(provided, (int, float)) and not isinstance(provided, bool):
-        lines.append(f"Обеспеченность к концу стройки — {format_value(float(provided), None)}.")
+        lines.append(f"Обеспечено сервисами жителей к концу стройки — {format_value(float(provided), None)}.")
 
     provision = summary.get("provision")
     if isinstance(provision, dict):
@@ -148,10 +154,10 @@ def _provision_lines(provision: dict[str, Any]) -> list[str]:
     final = provision.get("final_by_service") or {}
     if final:
         listed = ", ".join(f"{name} — {format_value(value, None)}" for name, value in final.items())
-        lines.append(f"Обеспеченность по типам сервисов: {listed}.")
+        lines.append(f"Показатели к концу стройки: {listed}.")
     unbuilt = provision.get("unbuilt_services") or []
     if unbuilt:
-        lines.append(f"Не построено в горизонте планирования: {', '.join(unbuilt)}.")
+        lines.append(f"Нулевая обеспеченность за все периоды: {', '.join(unbuilt)}.")
     return lines
 
 
