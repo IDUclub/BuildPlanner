@@ -32,6 +32,20 @@ class PipelineOptionsDTO(BaseModel):
         default=True,
         description="Сохранить результат в Urban API под сервисной учёткой и запустить расчёт оценок",
     )
+    sirtep_periods: int | None = Field(
+        default=None,
+        ge=1,
+        description="Переопределить число периодов, на которые SIRTEP раскладывает стройку",
+    )
+    sirtep_max_area_per_period: int | None = Field(
+        default=None,
+        ge=1,
+        description="Переопределить темп застройки за период, м² жилой площади и пятен сервисов",
+    )
+    sirtep_wait_provision: bool = Field(
+        default=True,
+        description="Дождаться ТЭПов SIRTEP; при false в ответе останется только очередь строительства",
+    )
     test: bool = Field(default=False, description="Использовать тестовый контур Urban API в GenPlanner")
 
     @field_validator("profile_id")

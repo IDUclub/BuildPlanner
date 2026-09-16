@@ -1,4 +1,4 @@
-"""Оркестрация пайплайна: показатели -> профиль -> зоны -> застройка.
+"""Оркестрация пайплайна: показатели -> профиль -> зоны -> застройка -> очередь строительства.
 
 Единственная реализация — асинхронный генератор событий `stream()`. Синхронный `run()`
 просто вычерпывает его до конца, поэтому REST и чат гарантированно ходят одним путём
@@ -18,6 +18,7 @@ from loguru import logger
 
 from app.clients.genbuilder_client import GenBuilderClient
 from app.clients.genplanner_client import GenPlannerClient
+from app.clients.sirtep_client import SirtepClient
 from app.clients.urban_api_client import UrbanApiClient
 from app.common.constants.pipeline_constants import PROFILE_NAMES, RESIDENTIAL_ZONE, SELECTION_INDICATOR_IDS
 from app.common.exceptions.http_exception import http_exception
@@ -26,6 +27,7 @@ from app.pipeline.buildings_summary import summarize_buildings
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.geo_layers import SLOT_BUILDINGS, SLOT_ROADS, SLOT_TITLES, SLOT_ZONES, LayerStore
 from app.pipeline.indicators_view import build_overview
+from app.pipeline.master_plan import PROVISION_BRANCH, build_summary, provision_digest, schedule_digest
 from app.pipeline.profile_selector import NoIndicatorValuesError, ProfileSelection, select_profile
 from app.pipeline.result_localization import localize_roads, localize_zones
 from app.pipeline.scenario_publisher import BROKER_STAGE, OBJECTS_UPDATED_EVENT, ZONES_UPDATED_EVENT, ScenarioPublisher
@@ -53,7 +55,11 @@ class PipelineRun:  # pylint: disable=too-many-instance-attributes  # мешок
     zones: dict[str, Any] | None = None
     roads: dict[str, Any] | None = None
     buildings: dict[str, Any] | None = None
+    buildings_summary: dict[str, Any] | None = None
     published: dict[str, Any] | None = None
+    schedule: dict[str, Any] | None = None
+    provision: dict[str, Any] | None = None
+    summary: dict[str, Any] | None = None
     source_project: tuple[int, int | None] | None = None
     targets_by_zone: dict[str, dict[str, Any]] = field(default_factory=dict)
     mapping_summary: dict[str, Any] = field(default_factory=dict)
@@ -71,6 +77,7 @@ class PipelineService:
         cache_ttl_seconds: int = 3600,
         publisher: ScenarioPublisher | None = None,
         layer_store: LayerStore | None = None,
+        sirtep_client: SirtepClient | None = None,
     ):
         self._urban = urban_client
         self._genplanner = genplanner_client
@@ -78,6 +85,7 @@ class PipelineService:
         self._cache_ttl = cache_ttl_seconds
         self._publisher = publisher
         self._layer_store = layer_store
+        self._sirtep = sirtep_client
         self._zones_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ публичный API
@@ -100,6 +108,8 @@ class PipelineService:
             targets_by_zone=run.targets_by_zone,
             mapping_summary=run.mapping_summary,
             published=run.published,
+            sirtep={"schedule": run.schedule, "provision": run.provision} if run.schedule is not None else None,
+            summary=run.summary,
             warnings=run.warnings,
         )
 
@@ -124,6 +134,10 @@ class PipelineService:
             # нескольких местах (застройка пропущена, застраивать нечего, GenBuilder упал),
             # а сохранить зоны и запустить расчёт оценок стоит в любом из этих случаев.
             async for event in self._emit_published(run, token, options):
+                yield event
+            async for event in self._emit_sirtep(run, options):
+                yield event
+            async for event in self._emit_summary(run):
                 yield event
         except HTTPException as exc:
             run.failure = exc
@@ -266,8 +280,9 @@ class PipelineService:
             return
 
         run.buildings = built.get("buildings") or built.get("content") or built
+        run.buildings_summary = self._build_summary(run, built)
         yield events.progress(events.STAGE_ASSEMBLE)
-        yield events.result(run.buildings, self._build_summary(run, built))
+        yield events.result(run.buildings, run.buildings_summary)
         async for event in self._emit_layer(run, SLOT_BUILDINGS, run.buildings):
             yield event
 
@@ -334,6 +349,77 @@ class PipelineService:
         for message, detail in _publication_warnings(run.published):
             run.warnings.append(message)
             yield events.warning(events.STAGE_PUBLISH, detail, message)
+
+    async def _emit_sirtep(self, run: PipelineRun, options: PipelineOptionsDTO) -> AsyncIterator[dict[str, Any]]:
+        """Очерёдность строительства по уже сохранённому сценарию.
+
+        Не фатально: зоны, застройка и сам сценарий у пользователя уже есть, и терять их
+        из-за недоступного SIRTEP было бы хуже, чем остаться без очереди.
+
+        Там, где SIRTEP заведомо ответит ошибкой, не зовём его вовсе и называем причину:
+        400 «нет жилых домов» и 500 на пустых сервисах ничего пользователю не объясняют.
+        """
+        if self._sirtep is None:
+            return
+
+        reason = _sirtep_skip_reason(run.published)
+        if reason:
+            run.warnings.append(reason)
+            yield events.warning(events.STAGE_SIRTEP, "sirtep_skipped", reason)
+            return
+
+        scenario_id = int((run.published or {})["scenario_id"])
+        yield events.progress(events.STAGE_SIRTEP)
+        try:
+            run.schedule = await self._sirtep.schedule(
+                scenario_id=scenario_id,
+                periods=options.sirtep_periods,
+                max_area_per_period=options.sirtep_max_area_per_period,
+            )
+        except HTTPException as exc:
+            message = "Очерёдность строительства не посчитана, остальной результат в силе."
+            run.warnings.append(message)
+            logger.warning("SIRTEP не отдал очередь по сценарию {}: {}", scenario_id, exc.detail)
+            yield events.warning(events.STAGE_SIRTEP, str(exc.detail)[:500], message)
+            return
+
+        digest = schedule_digest(run.schedule)
+        yield events.sirtep_schedule(run.schedule, digest)
+
+        if digest["branch"] != PROVISION_BRANCH:
+            message = "SIRTEP посчитал очередь по приоритетам — обеспеченность по ней не считается."
+            run.warnings.append(message)
+            yield events.warning(events.STAGE_SIRTEP, "priority_branch", message)
+            return
+
+        if not options.sirtep_wait_provision:
+            return
+
+        try:
+            run.provision = await self._sirtep.provision(
+                scenario_id=scenario_id,
+                periods=options.sirtep_periods,
+                max_area_per_period=options.sirtep_max_area_per_period,
+            )
+        except HTTPException as exc:
+            message = "Обеспеченность по периодам не дождалась расчёта — очередь строительства остаётся в силе."
+            run.warnings.append(message)
+            logger.warning("SIRTEP не отдал ТЭПы по сценарию {}: {}", scenario_id, exc.detail)
+            yield events.warning(events.STAGE_SIRTEP, str(exc.detail)[:500], message)
+            return
+
+        yield events.sirtep_provision(run.provision, provision_digest(run.provision))
+
+    async def _emit_summary(self, run: PipelineRun) -> AsyncIterator[dict[str, Any]]:
+        """Последнее событие прогона: всё, что получилось, в одном месте."""
+        run.summary = build_summary(
+            buildings=run.buildings_summary,
+            published=run.published,
+            schedule=run.schedule,
+            provision=run.provision,
+            warnings=run.warnings,
+        )
+        yield events.master_plan_summary(run.summary)
 
     async def _emit_territory_indicators(self, run: PipelineRun, token: str) -> AsyncIterator[dict[str, Any]]:
         overview, error = await self.territory_indicators(run.scenario_id, token)
@@ -442,6 +528,34 @@ SCORING_SCOPE: dict[str, str] = {
     ZONES_UPDATED_EVENT: "функциональным зонам",
     OBJECTS_UPDATED_EVENT: "зданиям и сервисам",
 }
+
+
+def _sirtep_skip_reason(published: dict[str, Any] | None) -> str | None:
+    """Почему очередь строительства не считается; `None` — считать можно.
+
+    Сбой на шаге брокера препятствием не является: данные сценария записаны, а SIRTEP
+    читает их из Urban API сам и об объявлении ничего не знает.
+    """
+    if published is None:
+        return "Сценарий не сохранён в Urban API — очерёдность строительства считать не по чему."
+
+    failed_stage = published.get("failed_stage")
+    if failed_stage and failed_stage != BROKER_STAGE:
+        return (
+            f"Сценарий {published.get('scenario_id')} записан не полностью (шаг {failed_stage}) — "
+            "очерёдность строительства по нему не считаю."
+        )
+    if not published.get("living_buildings_written"):
+        return (
+            "В сохранённом сценарии нет жилых домов — очередь строительства считается только по ним, "
+            "поэтому этот шаг пропускаю."
+        )
+    if not published.get("services_written"):
+        return (
+            "В сохранённом сценарии нет сервисов — без них не посчитать обеспеченность, "
+            "поэтому очерёдность строительства пропускаю."
+        )
+    return None
 
 
 def _publication_warnings(published: dict[str, Any]) -> list[tuple[str, str]]:

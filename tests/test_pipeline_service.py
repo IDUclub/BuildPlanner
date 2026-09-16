@@ -609,3 +609,165 @@ async def test_run_raises_when_scenario_has_no_indicator_values():
     with pytest.raises(HTTPException) as exc_info:
         await service.run(1, "token", PipelineOptionsDTO())
     assert exc_info.value.status_code == 422
+
+
+SCHEDULE_ANSWER = {
+    "provision": {
+        "house_construction_period": {"1": 1},
+        "service_construction_period": {"9": 1},
+        "houses_per_period": [2],
+        "services_per_period": [1],
+        "houses_area_per_period": [9000],
+        "services_area_per_period": [800],
+        "provided_per_period": [0.9],
+        "periods": [1],
+        "buildings_comment": None,
+        "services_comment": None,
+    },
+    "simple": None,
+}
+
+PROVISION_ANSWER = {"periods": [1], "provision": [{"школа": 0.9}], "unbuilt_services": []}
+
+# Сценарий, по которому очередь посчитать можно: записан целиком, есть и дома, и сервисы.
+READY_PUBLISHED = {
+    "project_id": 900,
+    "scenario_id": 777,
+    "notified": True,
+    "living_buildings_written": 3,
+    "services_written": 2,
+}
+
+
+class FakeSirtep:
+    def __init__(self, schedule_error: Exception | None = None, provision_error: Exception | None = None):
+        self.schedule_error = schedule_error
+        self.provision_error = provision_error
+        self.schedule_calls: list[dict[str, Any]] = []
+        self.provision_calls: list[dict[str, Any]] = []
+
+    async def schedule(self, *, scenario_id, periods=None, max_area_per_period=None):
+        self.schedule_calls.append(
+            {"scenario_id": scenario_id, "periods": periods, "max_area_per_period": max_area_per_period}
+        )
+        if self.schedule_error:
+            raise self.schedule_error
+        return SCHEDULE_ANSWER
+
+    async def provision(self, *, scenario_id, periods=None, max_area_per_period=None):
+        self.provision_calls.append(
+            {"scenario_id": scenario_id, "periods": periods, "max_area_per_period": max_area_per_period}
+        )
+        if self.provision_error:
+            raise self.provision_error
+        return PROVISION_ANSWER
+
+
+def build_with_sirtep(sirtep: FakeSirtep, published: dict[str, Any] | None = None) -> PipelineService:
+    return PipelineService(
+        FakeUrban(),
+        FakeGenPlanner(),
+        FakeGenBuilder(),
+        publisher=FakePublisher(published=published or READY_PUBLISHED),
+        sirtep_client=sirtep,
+    )
+
+
+def _skip_warnings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [event for event in events if event["type"] == "warning" and event["detail"] == "sirtep_skipped"]
+
+
+@pytest.mark.asyncio
+async def test_queue_is_built_on_the_published_scenario():
+    """SIRTEP читает сценарий из Urban API — звать его раньше публикации нечем."""
+    sirtep = FakeSirtep()
+    events = await collect(build_with_sirtep(sirtep))
+    types = [event["type"] for event in events]
+    assert types.index("scenario_published") < types.index("sirtep_schedule") < types.index("sirtep_provision")
+    assert sirtep.schedule_calls[0]["scenario_id"] == 777
+
+
+@pytest.mark.asyncio
+async def test_queue_is_skipped_without_dwellings():
+    """Без домов SIRTEP отвечает 400, и это ничего пользователю не объясняет."""
+    published = {**READY_PUBLISHED, "living_buildings_written": 0}
+    sirtep = FakeSirtep()
+    events = await collect(build_with_sirtep(sirtep, published))
+    assert not sirtep.schedule_calls
+    assert "жилых домов" in _skip_warnings(events)[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_queue_is_skipped_without_services():
+    """Без сервисов ветка обеспеченности падает 500."""
+    published = {**READY_PUBLISHED, "services_written": 0}
+    sirtep = FakeSirtep()
+    events = await collect(build_with_sirtep(sirtep, published))
+    assert not sirtep.schedule_calls
+    assert "сервисов" in _skip_warnings(events)[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_broker_failure_does_not_block_the_queue():
+    """Данные сценария записаны, не хватает только объявления — SIRTEP брокер и не нужен."""
+    published = {**READY_PUBLISHED, "failed_stage": "broker", "notified": False}
+    sirtep = FakeSirtep()
+    await collect(build_with_sirtep(sirtep, published))
+    assert sirtep.schedule_calls
+
+
+@pytest.mark.asyncio
+async def test_partially_written_scenario_blocks_the_queue():
+    """Очередь по неполному сценарию — это ответ про территорию, которой нет."""
+    published = {**READY_PUBLISHED, "failed_stage": "buildings"}
+    sirtep = FakeSirtep()
+    events = await collect(build_with_sirtep(sirtep, published))
+    assert not sirtep.schedule_calls
+    assert "не полностью" in _skip_warnings(events)[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_sirtep_failure_keeps_the_rest_of_the_run():
+    sirtep = FakeSirtep(schedule_error=HTTPException(status_code=503, detail={"msg": "sirtep down"}))
+    events = await collect(build_with_sirtep(sirtep))
+    types = [event["type"] for event in events]
+    assert "error" not in types
+    assert "result" in types and "master_plan_summary" in types
+    assert any(event["stage"] == "sirtep" for event in events if event["type"] == "warning")
+
+
+@pytest.mark.asyncio
+async def test_provision_timeout_keeps_the_queue():
+    """Очередь уже посчитана — терять её из-за недосчитанных ТЭПов нельзя."""
+    sirtep = FakeSirtep(provision_error=HTTPException(status_code=504, detail={"msg": "не успел"}))
+    events = await collect(build_with_sirtep(sirtep))
+    types = [event["type"] for event in events]
+    assert "sirtep_schedule" in types
+    assert "sirtep_provision" not in types
+    assert "error" not in types
+
+
+@pytest.mark.asyncio
+async def test_provision_can_be_waived_by_option():
+    sirtep = FakeSirtep()
+    events = await collect(build_with_sirtep(sirtep), PipelineOptionsDTO(sirtep_wait_provision=False))
+    assert not sirtep.provision_calls
+    assert "sirtep_schedule" in [event["type"] for event in events]
+
+
+@pytest.mark.asyncio
+async def test_pace_options_reach_sirtep():
+    sirtep = FakeSirtep()
+    options = PipelineOptionsDTO(sirtep_periods=8, sirtep_max_area_per_period=25_000)
+    await collect(build_with_sirtep(sirtep), options)
+    assert sirtep.schedule_calls[0]["periods"] == 8
+    assert sirtep.provision_calls[0]["max_area_per_period"] == 25_000
+
+
+@pytest.mark.asyncio
+async def test_summary_closes_every_run():
+    """Справка приходит последней и без SIRTEP: застройка и предупреждения в ней есть всегда."""
+    events = await collect(build_service())
+    assert events[-1]["type"] == "master_plan_summary"
+    assert events[-1]["buildings"]["buildings"] == 1
+    assert events[-1]["schedule"] is None

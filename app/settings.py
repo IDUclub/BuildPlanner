@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     urban_api: str = "https://urban-api.testing.idulab.ru"
     genplanner_api: str = "http://localhost:8081"
     genbuilder_api: str = "http://localhost:8082"
+    sirtep_api: str = ""
     chat_storage_api: str = ""
 
     # LLM
@@ -43,10 +44,17 @@ class Settings(BaseSettings):
     minio_bucket_name: str = ""
     minio_region: str = "us-east-1"
 
+    # очерёдность строительства по опубликованному сценарию
+    sirtep_periods: int = 40
+    sirtep_max_area_per_period: int = 100_000
+
     # таймауты и лимиты
     urban_api_timeout_seconds: int = 60
     genplanner_timeout_seconds: int = 1800
     genbuilder_timeout_seconds: int = 1800
+    sirtep_timeout_seconds: int = 1800
+    sirtep_provision_timeout_seconds: int = 300
+    sirtep_poll_seconds: int = 5
     sse_keepalive_seconds: int = 15
     genplanner_cache_ttl_seconds: int = 3600
 
@@ -72,3 +80,12 @@ class Settings(BaseSettings):
         только `POST /api/v1/projects?user_id=...`.
         """
         return self.publish_to_urban and self.service_account_enabled
+
+    @property
+    def sirtep_enabled(self) -> bool:
+        """Очередь строительства считается по опубликованному сценарию.
+
+        Без записи в Urban API SIRTEP нечего читать: сценарий существует только у нас
+        в памяти, а он ходит за ним в Urban API сам.
+        """
+        return bool(self.sirtep_api) and self.urban_write_enabled

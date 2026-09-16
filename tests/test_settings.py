@@ -18,3 +18,11 @@ def test_writing_needs_both_the_flag_and_the_service_account(monkeypatch):
         ).urban_write_enabled
         is True
     )
+
+
+def test_construction_queue_needs_both_the_address_and_publication():
+    """SIRTEP читает сценарий из Urban API: без публикации ему нечего читать."""
+    common = {"_env_file": None, "keycloak_url": "http://keycloak", "keycloak_client_secret": "secret"}
+    assert Settings(**common, sirtep_api="http://sirtep:5100", publish_to_urban=False).sirtep_enabled is False
+    assert Settings(**common, sirtep_api="", publish_to_urban=True).sirtep_enabled is False
+    assert Settings(**common, sirtep_api="http://sirtep:5100", publish_to_urban=True).sirtep_enabled is True

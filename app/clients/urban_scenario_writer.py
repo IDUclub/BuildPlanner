@@ -28,6 +28,7 @@ from app.common.auth.service_token import ServiceTokenProvider
 from app.common.constants.pipeline_constants import (
     BUILDING_TYPE_NAME_BY_ZONE,
     DEFAULT_BUILDING_TYPE_NAME,
+    RESIDENTIAL_ZONE,
     ZONE_NAME_TO_PROFILE,
 )
 from app.common.exceptions.http_exception import http_exception
@@ -41,6 +42,7 @@ class BuildingsWritten:
 
     written: int = 0
     failed: int = 0
+    living_written: int = 0
     services_written: int = 0
     services_failed: int = 0
     object_type_ids: list[int] = field(default_factory=list)
@@ -265,6 +267,9 @@ class UrbanScenarioWriter:
         Массовой ручки у Urban API нет, поэтому шлём параллельно с ограничением:
         реальный прогон — это тысячи зданий, и пускать их без предела нельзя.
 
+        `living_written` считается отдельно: жилыми дома делает тип физобъекта, и по нему же
+        их ищет SIRTEP — без них он очередь строительства не построит.
+
         Сервис с именем, которого нет в справочнике, не пишется, но здание остаётся:
         подставлять тип сервиса наугад нельзя. Сервис, который Urban API не принял,
         тоже не отменяет здание: физобъект и строение к этому моменту уже записаны.
@@ -288,9 +293,11 @@ class UrbanScenarioWriter:
             logger.warning("Не записано зданий: {} из {}. Первая ошибка: {}", len(failures), len(results), failures[0])
         if unknown:
             logger.warning("Service types unknown to Urban API, services skipped: {}", sorted(unknown))
+        living_type_id = type_ids.get(RESIDENTIAL_ZONE)
         return BuildingsWritten(
             written=len(written),
             failed=len(failures),
+            living_written=sum(1 for outcome in written if outcome.type_id == living_type_id),
             services_written=sum(len(outcome.service_type_ids) for outcome in written),
             services_failed=sum(outcome.services_failed for outcome in written),
             object_type_ids=sorted({outcome.type_id for outcome in written}),

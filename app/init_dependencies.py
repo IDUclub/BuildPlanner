@@ -9,6 +9,7 @@ from loguru import logger
 from app.chat.chat_service import ChatService
 from app.clients.genbuilder_client import GenBuilderClient
 from app.clients.genplanner_client import GenPlannerClient
+from app.clients.sirtep_client import SirtepClient
 from app.clients.urban_api_client import UrbanApiClient
 from app.clients.urban_scenario_writer import UrbanScenarioWriter
 from app.common.api_handlers.json_api_handler import AsyncJsonApiHandler
@@ -81,6 +82,19 @@ def init_dependencies(app: FastAPI) -> None:
     else:
         logger.warning("Запись в Urban API выключена: оценки по сгенерированному сценарию считаться не будут")
 
+    sirtep_client = None
+    if settings.sirtep_enabled and token_provider is not None:
+        sirtep_client = SirtepClient(
+            AsyncJsonApiHandler(settings.sirtep_api, settings.sirtep_timeout_seconds, "SIRTEP"),
+            token_provider,
+            periods=settings.sirtep_periods,
+            max_area_per_period=settings.sirtep_max_area_per_period,
+            provision_timeout_seconds=settings.sirtep_provision_timeout_seconds,
+            poll_seconds=settings.sirtep_poll_seconds,
+        )
+    else:
+        logger.warning("SIRTEP не настроен: очерёдность строительства считаться не будет")
+
     app.state.object_storage = _build_object_storage(settings)
     app.state.pipeline_service = PipelineService(
         urban_client=urban_client,
@@ -93,6 +107,7 @@ def init_dependencies(app: FastAPI) -> None:
             if app.state.object_storage is not None
             else None
         ),
+        sirtep_client=sirtep_client,
     )
 
     llm_client = None

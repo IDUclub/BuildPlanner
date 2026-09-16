@@ -32,12 +32,16 @@ class PublishedScenario:  # pylint: disable=too-many-instance-attributes
 
     `notified` means every message the written data needs was sent; `notified_events`
     lists the ones that were, so a broker failure halfway still says what is being scored.
+
+    `living_buildings_written` is what the construction queue needs: SIRTEP looks only at
+    dwellings, and without them it answers 400 instead of a schedule.
     """
 
     project_id: int
     scenario_id: int
     zones_written: int = 0
     buildings_written: int = 0
+    living_buildings_written: int = 0
     buildings_failed: int = 0
     buildings_total: int = 0
     services_written: int = 0
@@ -134,6 +138,7 @@ class ScenarioPublisher:
         written = await self._writer.add_buildings(published.scenario_id, region_id, building_features)
         published.buildings_written = written.written
         published.buildings_failed = written.failed
+        published.living_buildings_written = written.living_written
         published.services_written = written.services_written
         published.services_failed = written.services_failed
         published.unknown_service_names = written.unknown_service_names

@@ -35,4 +35,12 @@ class PipelineResultSchema(BaseModel):
         default=None,
         description="Куда сохранён результат: `scenario_id` сервисного сценария, по нему считаются оценки",
     )
+    sirtep: dict[str, Any] | None = Field(
+        default=None,
+        description="Ответы SIRTEP как есть: `schedule` — очередь строительства, `provision` — ТЭПы",
+    )
+    summary: dict[str, Any] | None = Field(
+        default=None,
+        description="Справка по прогону: застройка, публикация, очередь строительства, обеспеченность",
+    )
     warnings: list[str] = Field(default_factory=list)

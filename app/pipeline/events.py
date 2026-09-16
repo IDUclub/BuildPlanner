@@ -1,8 +1,9 @@
 """Словарь SSE-событий.
 
 Совпадает со словарём GenPlanner и GenBuilder — фронтенд, умеющий читать их потоки,
-читает и этот. Своих событий четыре: `indicators`, `territory_indicators`,
-`profile_selected` и `scenario_published` (ADR-0001, D5).
+читает и этот. Своих событий семь: `indicators`, `territory_indicators`, `profile_selected`,
+`scenario_published`, `sirtep_schedule`, `sirtep_provision` и `master_plan_summary`
+(ADR-0001, D5).
 Каждое событие — словарь с ключом `type`, который контроллер превращает в имя SSE-события.
 """
 
@@ -15,6 +16,7 @@ STAGE_MAP_ZONES = "map_zones"
 STAGE_GENBUILDER = "genbuilder"
 STAGE_ASSEMBLE = "assemble"
 STAGE_PUBLISH = "publish_scenario"
+STAGE_SIRTEP = "sirtep"
 STAGE_STORE_LAYER = "store_layer"
 
 STAGE_TITLES: dict[str, str] = {
@@ -25,6 +27,7 @@ STAGE_TITLES: dict[str, str] = {
     STAGE_GENBUILDER: "Расставляю застройку",
     STAGE_ASSEMBLE: "Собираю результат",
     STAGE_PUBLISH: "Сохраняю сценарий для расчёта оценок",
+    STAGE_SIRTEP: "Считаю очерёдность строительства",
 }
 
 
@@ -73,6 +76,25 @@ def scenario_published(published: dict[str, Any]) -> dict[str, Any]:
     берут сценарий по этому `scenario_id`.
     """
     return {"type": "scenario_published", **published}
+
+
+def sirtep_schedule(content: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    """Очередь строительства целиком плюс её сводка.
+
+    В `content` лежит ответ SIRTEP как есть: в нём периоды по каждому дому и сервису,
+    по ним фронтенд раскрашивает карту. В `summary` — то же самое для чтения.
+    """
+    return {"type": "sirtep_schedule", "content": content, "summary": summary}
+
+
+def sirtep_provision(content: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    """ТЭПы: как растёт обеспеченность по ходу стройки и что в горизонт не влезло."""
+    return {"type": "sirtep_provision", "content": content, "summary": summary}
+
+
+def master_plan_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Итог прогона одним событием: застройка, публикация, очередь, обеспеченность."""
+    return {"type": "master_plan_summary", **summary}
 
 
 def token(content: str) -> dict[str, Any]:

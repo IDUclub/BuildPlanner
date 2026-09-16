@@ -486,3 +486,32 @@ def test_service_account_id_comes_from_its_own_token():
 def test_broken_token_does_not_crash_the_service():
     assert _subject("не-jwt") is None
     assert _subject("header.$$$.signature") is None
+
+
+@pytest.mark.asyncio
+async def test_dwellings_are_counted_apart_from_the_rest():
+    """Очередь строительства считается только по жилым домам, и SIRTEP узнаёт их по типу."""
+    writer, _ = build_writer()
+    written = await writer.add_buildings(
+        7,
+        territory_id=42,
+        features=[_building("residential"), _building("residential"), _building("business")],
+    )
+    assert (written.written, written.living_written) == (3, 2)
+
+
+@pytest.mark.asyncio
+async def test_run_without_dwellings_says_so():
+    writer, _ = build_writer()
+    written = await writer.add_buildings(7, territory_id=42, features=[_building("industrial")])
+    assert written.living_written == 0
+
+
+@pytest.mark.asyncio
+async def test_published_scenario_reports_its_dwellings():
+    publisher, _, _ = build_publisher()
+    published = await publish(
+        publisher,
+        buildings={"type": "FeatureCollection", "features": [_building("residential"), _building("business")]},
+    )
+    assert published.living_buildings_written == 1

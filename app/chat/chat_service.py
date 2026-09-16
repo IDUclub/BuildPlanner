@@ -18,6 +18,7 @@ from app.common.llm.vllm_chat_client import VLLMChatClient, VLLMChatError
 from app.pipeline import events
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.indicators_view import highlights_table
+from app.pipeline.master_plan import summary_text
 from app.pipeline.pipeline_service import PipelineService
 
 TOKEN_CHUNK = 24
@@ -88,22 +89,7 @@ class ChatService:
             if event["type"] == "file" and event.get("url"):
                 # Сами слои в историю не влезут — кладём ссылки, по ним фронтенд перерисует карту.
                 file_parts.append(ChatStorageClient.file_part(event))
-            if event["type"] == "territory_indicators":
-                # В текст ответа идёт только короткая сводка: полная таблица уехала
-                # событием, её рисует фронтенд, и дублировать её в сообщение незачем.
-                table = highlights_table(event.get("highlights") or [])
-                if table:
-                    summary_lines.append(f"Показатели территории:\n{table}")
-            if event["type"] == "profile_selected":
-                summary_lines.append(str(event.get("reason", "")))
-            if event["type"] == "scenario_published":
-                scoring = _scoring_status(event)
-                summary_lines.append(
-                    f"Результат сохранён сценарием {event.get('scenario_id')} "
-                    f"в проекте {event.get('project_id')} — {scoring}."
-                )
-            if event["type"] == "warning" and event.get("message"):
-                summary_lines.append(str(event["message"]))
+            summary_lines.append(_summary_line(event))
             yield event
 
         message_id = await self._persist(
@@ -161,6 +147,31 @@ class ChatService:
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Не удалось сохранить сообщение в чат {}: {}", chat_id, exc)
             return None
+
+
+def _summary_line(event: dict[str, Any]) -> str:
+    """Что из события попадает в текст сохранённого ответа; пустая строка — ничего.
+
+    Порядок строк — порядок событий, поэтому справка по прогону оказывается последней.
+    """
+    kind = event["type"]
+    if kind == "territory_indicators":
+        # В текст ответа идёт только короткая сводка: полная таблица уехала событием,
+        # её рисует фронтенд, и дублировать её в сообщение незачем.
+        table = highlights_table(event.get("highlights") or [])
+        return f"Показатели территории:\n{table}" if table else ""
+    if kind == "profile_selected":
+        return str(event.get("reason", ""))
+    if kind == "scenario_published":
+        return (
+            f"Результат сохранён сценарием {event.get('scenario_id')} "
+            f"в проекте {event.get('project_id')} — {_scoring_status(event)}."
+        )
+    if kind == "master_plan_summary":
+        return summary_text(event)
+    if kind == "warning":
+        return str(event.get("message") or "")
+    return ""
 
 
 def _scoring_status(published: dict[str, Any]) -> str:
