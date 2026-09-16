@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     minio_region: str = "us-east-1"
 
     # очерёдность строительства по опубликованному сценарию
-    sirtep_periods: int = 40
+    sirtep_periods: int = 20
     sirtep_max_area_per_period: int = 100_000
 
     # таймауты и лимиты

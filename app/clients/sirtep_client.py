@@ -36,7 +36,7 @@ class SirtepClient:
         self,
         handler: AsyncJsonApiHandler,
         token_provider: ServiceTokenProvider,
-        periods: int = 40,
+        periods: int = 20,
         max_area_per_period: int = 100_000,
         provision_timeout_seconds: int = 300,
         poll_seconds: int = 5,
