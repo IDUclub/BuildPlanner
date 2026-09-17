@@ -9,6 +9,7 @@ from loguru import logger
 from app.chat.chat_service import ChatService
 from app.clients.genbuilder_client import GenBuilderClient
 from app.clients.genplanner_client import GenPlannerClient
+from app.clients.score_watcher import ScoreWatcher
 from app.clients.sirtep_client import SirtepClient
 from app.clients.urban_api_client import UrbanApiClient
 from app.clients.urban_scenario_writer import UrbanScenarioWriter
@@ -95,6 +96,18 @@ def init_dependencies(app: FastAPI) -> None:
     else:
         logger.warning("SIRTEP не настроен: очерёдность строительства считаться не будет")
 
+    score_watcher = None
+    if settings.score_wait_active and token_provider is not None:
+        score_watcher = ScoreWatcher(
+            urban_client,
+            token_provider,
+            expected_ids=settings.score_indicator_id_list,
+            timeout_seconds=settings.score_wait_timeout_seconds,
+            poll_seconds=settings.score_poll_seconds,
+        )
+    else:
+        logger.warning("Ожидание оценок выключено: итоговая сводка выйдет без оценок сторонних сервисов")
+
     app.state.object_storage = _build_object_storage(settings)
     app.state.pipeline_service = PipelineService(
         urban_client=urban_client,
@@ -108,6 +121,7 @@ def init_dependencies(app: FastAPI) -> None:
             else None
         ),
         sirtep_client=sirtep_client,
+        score_watcher=score_watcher,
     )
 
     llm_client = None

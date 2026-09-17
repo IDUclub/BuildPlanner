@@ -18,6 +18,7 @@ from loguru import logger
 
 from app.clients.genbuilder_client import GenBuilderClient
 from app.clients.genplanner_client import GenPlannerClient
+from app.clients.score_watcher import ScoreWatcher
 from app.clients.sirtep_client import SirtepClient
 from app.clients.urban_api_client import UrbanApiClient
 from app.common.constants.pipeline_constants import PROFILE_NAMES, RESIDENTIAL_ZONE, SELECTION_INDICATOR_IDS
@@ -27,7 +28,7 @@ from app.pipeline.buildings_summary import summarize_buildings
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.geo_layers import SLOT_BUILDINGS, SLOT_ROADS, SLOT_TITLES, SLOT_ZONES, LayerStore
 from app.pipeline.indicators_view import build_overview
-from app.pipeline.master_plan import PROVISION_BRANCH, build_summary, provision_digest, schedule_digest
+from app.pipeline.master_plan import PROVISION_BRANCH, build_summary, provision_digest, schedule_digest, scores_digest
 from app.pipeline.profile_selector import NoIndicatorValuesError, ProfileSelection, select_profile
 from app.pipeline.result_localization import localize_roads, localize_zones
 from app.pipeline.scenario_publisher import BROKER_STAGE, OBJECTS_UPDATED_EVENT, ZONES_UPDATED_EVENT, ScenarioPublisher
@@ -57,8 +58,10 @@ class PipelineRun:  # pylint: disable=too-many-instance-attributes  # мешок
     buildings: dict[str, Any] | None = None
     buildings_summary: dict[str, Any] | None = None
     published: dict[str, Any] | None = None
+    published_at: str | None = None  # ISO-момент публикации — порог свежести для ScoreWatcher
     schedule: dict[str, Any] | None = None
     provision: dict[str, Any] | None = None
+    scores: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
     source_project: tuple[int, int | None] | None = None
     targets_by_zone: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -78,6 +81,7 @@ class PipelineService:
         publisher: ScenarioPublisher | None = None,
         layer_store: LayerStore | None = None,
         sirtep_client: SirtepClient | None = None,
+        score_watcher: ScoreWatcher | None = None,
     ):
         self._urban = urban_client
         self._genplanner = genplanner_client
@@ -86,6 +90,7 @@ class PipelineService:
         self._publisher = publisher
         self._layer_store = layer_store
         self._sirtep = sirtep_client
+        self._scores = score_watcher
         self._zones_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ публичный API
@@ -109,6 +114,7 @@ class PipelineService:
             mapping_summary=run.mapping_summary,
             published=run.published,
             sirtep={"schedule": run.schedule, "provision": run.provision} if run.schedule is not None else None,
+            scores=run.scores,
             summary=run.summary,
             warnings=run.warnings,
         )
@@ -136,6 +142,8 @@ class PipelineService:
             async for event in self._emit_published(run, token, options):
                 yield event
             async for event in self._emit_sirtep(run, options):
+                yield event
+            async for event in self._emit_scores(run):
                 yield event
             async for event in self._emit_summary(run):
                 yield event
@@ -333,6 +341,9 @@ class PipelineService:
             return
 
         yield events.progress(events.STAGE_PUBLISH)
+        # Порог свежести для ScoreWatcher: значения оценок, легшие после этого момента, —
+        # результат текущего прогона, а не то, что лежало у сценария до расчёта.
+        run.published_at = datetime.now(timezone.utc).isoformat()
         try:
             published = await self._publisher.publish(
                 source_scenario_id=run.scenario_id,
@@ -416,6 +427,48 @@ class PipelineService:
 
         yield events.sirtep_provision(run.provision, provision_digest(run.provision))
 
+    async def _emit_scores(self, run: PipelineRun) -> AsyncIterator[dict[str, Any]]:
+        """Ожидание оценок, посчитанных сторонними сервисами по опубликованному сценарию.
+
+        Не фатально, как и SIRTEP: сценарий и застройка у пользователя уже есть. «Слушать
+        брокер» напрямую нельзя — доступа к нему нет, поэтому опрашиваем `indicators_values`,
+        пока сервисы не положат туда свежие значения (см. `ScoreWatcher`). По таймауту сводка
+        выходит частичной, с перечнем того, чего не дождались.
+        """
+        if self._scores is None:
+            return
+
+        reason = _scores_skip_reason(run.published)
+        if reason:
+            run.warnings.append(reason)
+            yield events.warning(events.STAGE_SCORES, "scores_skipped", reason)
+            return
+
+        scenario_id = int((run.published or {})["scenario_id"])
+        yield events.progress(events.STAGE_SCORES)
+        try:
+            result = await self._scores.await_scores(scenario_id=scenario_id, since=run.published_at)
+        except HTTPException as exc:
+            message = "Оценки по сценарию не дождались расчёта — остальной результат в силе."
+            run.warnings.append(message)
+            logger.warning("Оценки по сценарию {} не пришли: {}", scenario_id, exc.detail)
+            yield events.warning(events.STAGE_SCORES, str(exc.detail)[:500], message)
+            return
+
+        if result.timed_out:
+            message = "Не все оценки посчитались за отведённое время" + (
+                f" — не хватает индикаторов {result.missing_ids}." if result.missing_ids else "."
+            )
+            run.warnings.append(message)
+            yield events.warning(events.STAGE_SCORES, "scores_timeout", message)
+
+        run.scores = {
+            "values": result.values,
+            "arrived_ids": result.arrived_ids,
+            "missing_ids": result.missing_ids,
+        }
+        yield events.scores(run.scores, scores_digest(run.scores))
+
     async def _emit_summary(self, run: PipelineRun) -> AsyncIterator[dict[str, Any]]:
         """Последнее событие прогона: всё, что получилось, в одном месте."""
         run.summary = build_summary(
@@ -423,6 +476,7 @@ class PipelineService:
             published=run.published,
             schedule=run.schedule,
             provision=run.provision,
+            scores=run.scores,
             warnings=run.warnings,
         )
         yield events.master_plan_summary(run.summary)
@@ -602,6 +656,26 @@ def _sirtep_skip_reason(published: dict[str, Any] | None) -> str | None:
             "В сохранённом сценарии нет сервисов — без них не посчитать обеспеченность, "
             "поэтому очерёдность строительства пропускаю."
         )
+    return None
+
+
+def _scores_skip_reason(published: dict[str, Any] | None) -> str | None:
+    """Почему оценки не ждём; `None` — ждать можно.
+
+    Расчёт оценок запускает сообщение в брокер: без него сервисы ничего не считают,
+    и ждать свежих значений у сценария бессмысленно.
+    """
+    if published is None:
+        return "Сценарий не сохранён в Urban API — оценки считать не по чему."
+
+    failed_stage = published.get("failed_stage")
+    if failed_stage and failed_stage != BROKER_STAGE:
+        return (
+            f"Сценарий {published.get('scenario_id')} записан не полностью (шаг {failed_stage}) — "
+            "оценки по нему не запущены, ждать нечего."
+        )
+    if not published.get("notified"):
+        return "Сообщение в брокер не отправлено — расчёт оценок не запущен, ждать нечего."
     return None
 
 

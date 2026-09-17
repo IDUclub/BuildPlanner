@@ -86,12 +86,38 @@ def provision_digest(answer: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def scores_digest(scores: dict[str, Any] | None) -> dict[str, Any]:
+    """Оценки сторонних сервисов в человеческом виде: сколько пришло, чего не хватает.
+
+    Скелет: пока ожидаемый набор не подтверждён живым прогоном, разбираем строки индикаторов
+    по факту — id, имя и значение каждой пришедшей оценки. Форму строки уточним по реальному
+    ответу `indicators_values`.
+    """
+    payload = scores or {}
+    values = [row for row in (payload.get("values") or []) if isinstance(row, dict)]
+    return {
+        "arrived": len(values),
+        "missing_ids": [value for value in (payload.get("missing_ids") or []) if isinstance(value, int)],
+        "items": [_score_item(row) for row in values],
+    }
+
+
+def _score_item(row: dict[str, Any]) -> dict[str, Any]:
+    indicator = row.get("indicator") if isinstance(row.get("indicator"), dict) else {}
+    return {
+        "indicator_id": indicator.get("indicator_id"),
+        "name": indicator.get("name_full") or indicator.get("name"),
+        "value": row.get("value"),
+    }
+
+
 def build_summary(
     *,
     buildings: dict[str, Any] | None,
     published: dict[str, Any] | None,
     schedule: dict[str, Any] | None,
     provision: dict[str, Any] | None,
+    scores: dict[str, Any] | None = None,
     warnings: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Всё, что известно о прогоне к его концу. Любая часть может отсутствовать."""
@@ -100,6 +126,7 @@ def build_summary(
         "published": published,
         "schedule": schedule_digest(schedule) if schedule is not None else None,
         "provision": provision_digest(provision) if provision is not None else None,
+        "scores": scores_digest(scores) if scores is not None else None,
         "warnings": list(warnings),
     }
 

@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     sirtep_periods: int = 20
     sirtep_max_area_per_period: int = 100_000
 
+    # ожидание оценок, посчитанных сторонними сервисами по опубликованному сценарию
+    score_wait_enabled: bool = True
+    score_indicator_ids: str = ""  # CSV ожидаемых индикаторов; пусто — фолбэк по «затиханию»
+    score_wait_timeout_seconds: int = 600
+    score_poll_seconds: int = 10
+
     # таймауты и лимиты
     urban_api_timeout_seconds: int = 60
     genplanner_timeout_seconds: int = 1800
@@ -89,3 +95,17 @@ class Settings(BaseSettings):
         в памяти, а он ходит за ним в Urban API сам.
         """
         return bool(self.sirtep_api) and self.urban_write_enabled
+
+    @property
+    def score_wait_active(self) -> bool:
+        """Ждать оценки есть смысл только там, где мы их и запускаем — под записью в Urban API.
+
+        Без публикации сценарий существует только у нас в памяти: сервисам нечего считать,
+        а нам — не по чему опрашивать индикаторы.
+        """
+        return self.score_wait_enabled and self.urban_write_enabled
+
+    @property
+    def score_indicator_id_list(self) -> tuple[int, ...]:
+        """Ожидаемый набор оценок из CSV. Пустой набор включает фолбэк по «затиханию»."""
+        return tuple(int(x) for x in self.score_indicator_ids.split(",") if x.strip())

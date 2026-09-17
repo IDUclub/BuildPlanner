@@ -39,6 +39,10 @@ class PipelineResultSchema(BaseModel):
         default=None,
         description="Ответы SIRTEP как есть: `schedule` — очередь строительства, `provision` — ТЭПы",
     )
+    scores: dict[str, Any] | None = Field(
+        default=None,
+        description="Оценки сторонних сервисов по опубликованному сценарию: `values` — значения индикаторов",
+    )
     summary: dict[str, Any] | None = Field(
         default=None,
         description="Справка по прогону: застройка, публикация, очередь строительства, обеспеченность",

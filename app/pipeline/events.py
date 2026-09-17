@@ -1,8 +1,8 @@
 """Словарь SSE-событий.
 
 Совпадает со словарём GenPlanner и GenBuilder — фронтенд, умеющий читать их потоки,
-читает и этот. Своих событий семь: `indicators`, `territory_indicators`, `profile_selected`,
-`scenario_published`, `sirtep_schedule`, `sirtep_provision` и `master_plan_summary`
+читает и этот. Своих событий восемь: `indicators`, `territory_indicators`, `profile_selected`,
+`scenario_published`, `sirtep_schedule`, `sirtep_provision`, `scores` и `master_plan_summary`
 (ADR-0001, D5).
 Каждое событие — словарь с ключом `type`, который контроллер превращает в имя SSE-события.
 """
@@ -17,6 +17,7 @@ STAGE_GENBUILDER = "genbuilder"
 STAGE_ASSEMBLE = "assemble"
 STAGE_PUBLISH = "publish_scenario"
 STAGE_SIRTEP = "sirtep"
+STAGE_SCORES = "await_scores"
 STAGE_STORE_LAYER = "store_layer"
 
 STAGE_TITLES: dict[str, str] = {
@@ -28,6 +29,7 @@ STAGE_TITLES: dict[str, str] = {
     STAGE_ASSEMBLE: "Собираю результат",
     STAGE_PUBLISH: "Сохраняю сценарий для расчёта оценок",
     STAGE_SIRTEP: "Считаю очерёдность строительства",
+    STAGE_SCORES: "Жду расчёт оценок",
 }
 
 
@@ -90,6 +92,16 @@ def sirtep_schedule(content: dict[str, Any], summary: dict[str, Any]) -> dict[st
 def sirtep_provision(content: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
     """ТЭПы: как растёт обеспеченность по ходу стройки и что в горизонт не влезло."""
     return {"type": "sirtep_provision", "content": content, "summary": summary}
+
+
+def scores(content: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    """Оценки, посчитанные сторонними сервисами по опубликованному сценарию.
+
+    В `content` — значения индикаторов как есть (для карты/таблицы), в `summary` — то же
+    для чтения. «Слушать брокер» напрямую нельзя, поэтому ждём появления свежих значений
+    у сценария; частичный набор по таймауту — тоже результат (см. `ScoreWatcher`).
+    """
+    return {"type": "scores", "content": content, "summary": summary}
 
 
 def master_plan_summary(summary: dict[str, Any]) -> dict[str, Any]:
