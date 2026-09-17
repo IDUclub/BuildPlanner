@@ -54,7 +54,16 @@ def profile_selected(selection: dict[str, Any]) -> dict[str, Any]:
     return {"type": "profile_selected", **selection}
 
 
+def layer(kind: str, descriptor: dict[str, Any], summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Типизированное событие слоя; GeoJSON берётся фронтендом по ``content.url``."""
+    event: dict[str, Any] = {"type": kind, "content": descriptor}
+    if summary is not None:
+        event["summary"] = summary
+    return event
+
+
 def zones(content: dict[str, Any], source: str = "genplanner") -> dict[str, Any]:
+    """Резервный inline-формат, когда хранилище слоёв не настроено."""
     return {"type": "zones", "source": source, "content": content}
 
 
@@ -67,8 +76,8 @@ def result(content: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def file(descriptor: dict[str, Any]) -> dict[str, Any]:
-    """Ссылка на сохранённый слой: по ней фронтенд перерисует карту из истории чата."""
-    return {"type": "file", **descriptor}
+    """Общее PZZ-совместимое событие слоя."""
+    return {"type": "file", "content": descriptor}
 
 
 def scenario_published(published: dict[str, Any]) -> dict[str, Any]:

@@ -4,6 +4,7 @@ import json
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import RedirectResponse
 
 from app.common.object_storage.object_storage import (
     LocalStorage,
@@ -106,19 +107,38 @@ async def test_stored_layer_is_served_back_unchanged(tmp_path):
     descriptor = await LayerStore(storage).store("buildings", RESULT_ID, LAYER)
     assert descriptor["name"] == "buildings"
 
-    response = layer_file("buildings", RESULT_ID, "token", storage)
+    response = layer_file("buildings", RESULT_ID, storage, Settings(_env_file=None))
     assert response.media_type == "application/geo+json"
     assert json.loads(await _read(response)) == LAYER
+
+
+@pytest.mark.asyncio
+async def test_durable_layer_url_redirects_to_a_fresh_object_storage_url(tmp_path):
+    class PresigningStorage(LocalStorage):
+        def presigned_url(self, object_key, expires_seconds):
+            assert object_key == f"{RESULT_ID}/zones.geojson"
+            assert expires_seconds == 120
+            return "https://minio.example/layer?signature=fresh"
+
+    storage = PresigningStorage(str(tmp_path))
+    await LayerStore(storage, url_ttl_seconds=120).store("zones", RESULT_ID, LAYER)
+    settings = Settings(_env_file=None, geo_layer_url_ttl_seconds=120)
+
+    response = layer_file("zones", RESULT_ID, storage, settings)
+
+    assert isinstance(response, RedirectResponse)
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://minio.example/layer?signature=fresh"
 
 
 @pytest.mark.parametrize("slot, result_id", [("zones", RESULT_ID), ("secrets", RESULT_ID), ("zones", "nope")])
 def test_missing_or_malformed_layer_is_404(tmp_path, slot, result_id):
     with pytest.raises(HTTPException) as exc_info:
-        layer_file(slot, result_id, "token", LocalStorage(str(tmp_path)))
+        layer_file(slot, result_id, LocalStorage(str(tmp_path)), Settings(_env_file=None))
     assert exc_info.value.status_code == 404
 
 
 def test_service_without_storage_answers_404():
     with pytest.raises(HTTPException) as exc_info:
-        layer_file("zones", RESULT_ID, "token", None)
+        layer_file("zones", RESULT_ID, None, Settings(_env_file=None))
     assert exc_info.value.status_code == 404

@@ -527,11 +527,11 @@ async def test_every_layer_is_stored_right_after_it_is_streamed(tmp_path):
     events = [event async for event in service.stream(1, "token", PipelineOptionsDTO(), base_url="http://bp/")]
     types = [event["type"] for event in events]
 
-    assert [event["name"] for event in _files(events)] == ["zones", "roads", "buildings"]
-    assert types.index("zones") < types.index("file") < types.index("roads")
-    assert types.index("result") < len(types) - 1 - types[::-1].index("file")
-    result_id = _files(events)[0]["url"].rsplit("/", 1)[-1]
-    assert _files(events)[0]["url"] == f"http://bp/buildplanner/files/zones/{result_id}"
+    assert [event["content"]["name"] for event in _files(events)] == ["zones", "roads", "buildings"]
+    assert types.index("file") < types.index("zones") < types.index("roads")
+    assert types.index("file", types.index("roads")) < types.index("result")
+    result_id = _files(events)[0]["content"]["url"].rsplit("/", 1)[-1]
+    assert _files(events)[0]["content"]["url"] == f"http://bp/buildplanner/files/zones/{result_id}"
     assert storage.exists(f"{result_id}/buildings.geojson")
 
 
@@ -563,14 +563,18 @@ async def test_map_gets_russian_attributes_while_the_pipeline_keeps_raw_zones(tm
     events = [event async for event in service.stream(1, "token", PipelineOptionsDTO(), base_url="http://bp/")]
     by_type = {event["type"]: event for event in events}
 
-    zone_labels = [feature["properties"] for feature in by_type["zones"]["content"]["features"]]
+    zone_descriptor = by_type["zones"]["content"]
+    road_descriptor = by_type["roads"]["content"]
+    files = {event["content"]["name"]: event["content"]["url"] for event in _files(events)}
+    zones = _stored(storage, files["zones"], "zones")
+    roads = _stored(storage, files["roads"], "roads")
+    zone_labels = [feature["properties"] for feature in zones["features"]]
     assert zone_labels == [{"Территориальная зона": "жилая"}, {"Территориальная зона": "рекреационная"}]
-    road = by_type["roads"]["content"]["features"][0]["properties"]
+    road = roads["features"][0]["properties"]
     assert road == {"Ширина, м": 6.0, "road_lvl": "local road, level 1", "road_class": "street"}
 
-    files = {event["name"]: event["url"] for event in _files(events)}
-    assert _stored(storage, files["zones"], "zones") == by_type["zones"]["content"]
-    assert _stored(storage, files["roads"], "roads") == by_type["roads"]["content"]
+    assert zone_descriptor["url"] == files["zones"]
+    assert road_descriptor["url"] == files["roads"]
     assert "result" in by_type, "GenBuilder должен получить блоки из исходных зон"
 
     result = await PipelineService(FakeUrban(), FakeGenPlannerWithRoads(), FakeGenBuilder()).run(
@@ -587,7 +591,7 @@ async def test_storage_failure_warns_once_and_keeps_the_run(tmp_path):
     events = await collect(service)
     types = [event["type"] for event in events]
 
-    assert "result" in types
+    assert "result" not in types
     assert "error" not in types
     assert not _files(events)
     assert len([event for event in events if event["type"] == "warning" and event["stage"] == "store_layer"]) == 1

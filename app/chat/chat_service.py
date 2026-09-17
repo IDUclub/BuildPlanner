@@ -86,9 +86,9 @@ class ChatService:
         file_parts: list[dict[str, Any]] = []
 
         async for event in self._pipeline.stream(scenario_id, token, options, base_url=base_url):
-            if event["type"] == "file" and event.get("url"):
+            if event["type"] == "file" and (descriptor := event.get("content") or event).get("url"):
                 # Сами слои в историю не влезут — кладём ссылки, по ним фронтенд перерисует карту.
-                file_parts.append(ChatStorageClient.file_part(event))
+                file_parts.append(ChatStorageClient.file_part(descriptor))
             summary_lines.append(_summary_line(event))
             yield event
 

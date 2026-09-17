@@ -4,8 +4,8 @@
 только ссылки. Поэтому каждый слой после отправки пишется в хранилище под id прогона,
 а в поток и в историю уходит дескриптор — куда за ним сходить.
 
-`download_url` всегда `None`: хранилище в закрытой сети, байты отдаёт наша ручка
-`/buildplanner/files/{slot}/{result_id}`. Форма дескриптора та же, что у GenBuilder.
+`url` — долговечная API-ссылка, а `download_url` — свежая временная ссылка MinIO. Форма
+дескриптора совпадает с PZZ: фронтенд получает его в SSE и запрашивает слой отдельно.
 """
 
 import asyncio
@@ -72,9 +72,15 @@ def layer_descriptor(
 class LayerStore:
     """Пишет слой в хранилище и возвращает его дескриптор."""
 
-    def __init__(self, storage: ObjectStorage, public_base_url: str | None = None):
+    def __init__(
+        self,
+        storage: ObjectStorage,
+        public_base_url: str | None = None,
+        url_ttl_seconds: int = 3600,
+    ):
         self.storage = storage
         self._public_base_url = public_base_url or None
+        self._url_ttl_seconds = url_ttl_seconds
 
     async def store(
         self,
@@ -84,5 +90,10 @@ class LayerStore:
         request_base_url: str | None = None,
     ) -> dict[str, Any]:
         # Клиент MinIO синхронный: в потоке событий его нельзя звать напрямую.
-        await asyncio.to_thread(self.storage.put_json, content, object_key(result_id, slot))
-        return layer_descriptor(slot, result_id, self._public_base_url, request_base_url)
+        key = object_key(result_id, slot)
+        await asyncio.to_thread(self.storage.put_json, content, key)
+        descriptor = layer_descriptor(slot, result_id, self._public_base_url, request_base_url)
+        descriptor["download_url"] = await asyncio.to_thread(
+            self.storage.presigned_url, key, self._url_ttl_seconds
+        )
+        return descriptor

@@ -116,7 +116,11 @@ def init_dependencies(app: FastAPI) -> None:
         cache_ttl_seconds=settings.genplanner_cache_ttl_seconds,
         publisher=publisher,
         layer_store=(
-            LayerStore(app.state.object_storage, settings.public_base_url)
+            LayerStore(
+                app.state.object_storage,
+                settings.public_base_url,
+                settings.geo_layer_url_ttl_seconds,
+            )
             if app.state.object_storage is not None
             else None
         ),

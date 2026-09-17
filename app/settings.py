@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     minio_secret_key: str = ""
     minio_bucket_name: str = ""
     minio_region: str = "us-east-1"
+    geo_layer_url_ttl_seconds: int = 3600
 
     # очерёдность строительства по опубликованному сценарию
     sirtep_periods: int = 20

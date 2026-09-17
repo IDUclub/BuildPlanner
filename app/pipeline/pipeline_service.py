@@ -203,14 +203,18 @@ class PipelineService:
         run.roads = generated.get("roads")
         # Фронтенду — русские атрибуты; блоки, GenBuilder и публикация читают исходные `run.zones`.
         zones_view = localize_zones(run.zones)
-        yield events.zones(zones_view)
-        async for event in self._emit_layer(run, SLOT_ZONES, zones_view):
-            yield event
+        if self._layer_store is None:
+            yield events.zones(zones_view)
+        else:
+            async for event in self._emit_layer(run, SLOT_ZONES, zones_view, event_type="zones"):
+                yield event
         if run.roads:
             roads_view = localize_roads(run.roads)
-            yield events.roads(roads_view)
-            async for event in self._emit_layer(run, SLOT_ROADS, roads_view):
-                yield event
+            if self._layer_store is None:
+                yield events.roads(roads_view)
+            else:
+                async for event in self._emit_layer(run, SLOT_ROADS, roads_view, event_type="roads"):
+                    yield event
 
         # --- блоки
         yield events.progress(events.STAGE_MAP_ZONES)
@@ -296,19 +300,31 @@ class PipelineService:
             yield events.warning(events.STAGE_GENBUILDER, "services_unplaced", services_message)
 
         yield events.progress(events.STAGE_ASSEMBLE)
-        yield events.result(run.buildings, run.buildings_summary)
-        async for event in self._emit_layer(run, SLOT_BUILDINGS, run.buildings):
-            yield event
+        if self._layer_store is None:
+            yield events.result(run.buildings, run.buildings_summary)
+        else:
+            async for event in self._emit_layer(
+                run,
+                SLOT_BUILDINGS,
+                run.buildings,
+                event_type="result",
+                summary=run.buildings_summary,
+            ):
+                yield event
 
         for descriptor in built.get("files", []) or []:
             yield events.file({**descriptor, "source_service": descriptor.get("source_service", "genbuilder")})
 
-    async def _emit_layer(self, run: PipelineRun, slot: str, content: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
-        """Сохраняет только что отданный слой, чтобы фронтенд перерисовал его из истории чата.
-
-        Не фатально: в живом потоке слой уже у фронтенда, теряется только перерисовка после
-        перезагрузки. После первого сбоя остальные слои прогона не пишем — предупреждение одно.
-        """
+    async def _emit_layer(
+        self,
+        run: PipelineRun,
+        slot: str,
+        content: dict[str, Any],
+        *,
+        event_type: str,
+        summary: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Сохраняет слой до SSE: клиент получает только ссылку, а не тяжёлый GeoJSON."""
         layers = run.layers
         if self._layer_store is None or not layers.enabled:
             return
@@ -325,6 +341,7 @@ class PipelineService:
             yield events.warning(events.STAGE_STORE_LAYER, str(exc)[:500], message)
             return
         yield events.file(descriptor)
+        yield events.layer(event_type, descriptor, summary)
 
     async def _emit_published(
         self,
