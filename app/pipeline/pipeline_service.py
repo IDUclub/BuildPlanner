@@ -281,6 +281,12 @@ class PipelineService:
 
         run.buildings = built.get("buildings") or built.get("content") or built
         run.buildings_summary = self._build_summary(run, built)
+
+        services_message = _services_warning(built.get("service_diagnostics"))
+        if services_message is not None:
+            run.warnings.append(services_message)
+            yield events.warning(events.STAGE_GENBUILDER, "services_unplaced", services_message)
+
         yield events.progress(events.STAGE_ASSEMBLE)
         yield events.result(run.buildings, run.buildings_summary)
         async for event in self._emit_layer(run, SLOT_BUILDINGS, run.buildings):
@@ -528,6 +534,47 @@ SCORING_SCOPE: dict[str, str] = {
     ZONES_UPDATED_EVENT: "функциональным зонам",
     OBJECTS_UPDATED_EVENT: "зданиям и сервисам",
 }
+
+
+def _services_warning(diagnostics: dict[str, Any] | None) -> str | None:
+    """Предупреждение о неразмещённых сервисах; `None` — предупреждать не о чем.
+
+    GenBuilder 0.1.3 отдаёт `service_diagnostics` (а `summary` при этом `null`), поэтому
+    нули по сервисам иначе уходят молча. Сообщаем, когда сервисы запрашивались по нормативам,
+    но разместить удалось не все, и раскрываем причины: нет шаблона здания в GenBuilder,
+    не хватило места в кварталах, достигнут лимит площадки.
+    """
+    if not diagnostics:
+        return None
+
+    requested = diagnostics.get("services_requested") or 0
+    placed = diagnostics.get("services_placed") or 0
+    if requested <= 0 or placed >= requested:
+        return None
+
+    reasons: list[str] = []
+    no_template = diagnostics.get("unplaced_no_template") or 0
+    no_space = diagnostics.get("unplaced_no_space") or 0
+    site_limit = diagnostics.get("unplaced_site_limit") or 0
+    if no_template:
+        reasons.append(f"нет шаблона — {no_template}")
+    if no_space:
+        reasons.append(f"не хватило места — {no_space}")
+    if site_limit:
+        reasons.append(f"достигнут лимит площадки — {site_limit}")
+    reasons_text = "; ".join(reasons) if reasons else "причина не указана"
+
+    head = (
+        f"Сервисы не расставлены: запрошено {requested}, размещено {placed}."
+        if placed == 0
+        else f"Сервисы размещены частично: {placed} из {requested}."
+    )
+    capacity_unplaced = diagnostics.get("capacity_unplaced")
+    capacity_requested = diagnostics.get("capacity_requested")
+    tail = ""
+    if capacity_unplaced:
+        tail = f" Не размещено мощности: {capacity_unplaced:g} из {capacity_requested:g}."
+    return f"{head} Причины: {reasons_text}.{tail}"
 
 
 def _sirtep_skip_reason(published: dict[str, Any] | None) -> str | None:
