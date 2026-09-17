@@ -32,6 +32,7 @@ from app.common.constants.pipeline_constants import (
     ZONE_NAME_TO_PROFILE,
 )
 from app.common.exceptions.http_exception import http_exception
+from app.common.geometries.geo_clean import clean_geometry
 
 CATALOGUE_TTL_SECONDS = 3600
 
@@ -239,9 +240,16 @@ class UrbanScenarioWriter:
             if type_id is None:
                 skipped.add(str(properties.get("territory_zone_name") or properties.get("territory_zone")))
                 continue
+            geometry = clean_geometry(feature.get("geometry"))
+            if geometry is None:
+                logger.warning(
+                    "Зона «{}» пропущена: геометрия вырождена после чистки",
+                    properties.get("territory_zone_name") or properties.get("territory_zone"),
+                )
+                continue
             payload.append(
                 {
-                    "geometry": feature.get("geometry"),
+                    "geometry": geometry,
                     "functional_zone_type_id": type_id,
                     "name": properties.get("territory_zone_name"),
                     "year": year,
@@ -314,11 +322,18 @@ class UrbanScenarioWriter:
         services: Sequence[_Service],
     ) -> _BuildingOutcome:
         properties = feature.get("properties") or {}
+        geometry = clean_geometry(feature.get("geometry"))
+        if geometry is None:
+            raise http_exception(
+                422,
+                "Геометрия здания вырождена после чистки",
+                _input={"name": properties.get("name")},
+            )
         async with self._semaphore:
             urban_object = await self._post(
                 f"/api/v1/scenarios/{scenario_id}/physical_objects",
                 {
-                    "geometry": feature.get("geometry"),
+                    "geometry": geometry,
                     "territory_id": territory_id,
                     "physical_object_type_id": type_id,
                     "name": properties.get("name"),
