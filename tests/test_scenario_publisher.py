@@ -28,6 +28,10 @@ OBJECT_TYPES = [
     {"physical_object_type_id": 5, "name": "Нежилое здание"},
     {"physical_object_type_id": 52, "name": "Местная дорога"},
 ]
+SERVICE_TYPES = [
+    {"service_type_id": 21, "name": "Детский сад"},
+    {"service_type_id": 22, "name": "Школа"},
+]
 
 
 def _zone(territory_zone: Any = None, name: str | None = None) -> dict[str, Any]:
@@ -44,6 +48,19 @@ def _building(zone: str = "residential", **properties: Any) -> dict[str, Any]:
     return {"type": "Feature", "geometry": {"type": "Point", "coordinates": [30.0, 60.0]}, "properties": properties}
 
 
+def _genbuilder_building(zone: str = "residential", service: list[dict[str, float]] | None = None) -> dict[str, Any]:
+    """Feature as `/generate/by_territory` returns it: GenBuilder's own keys, floats included."""
+    return _building(
+        zone,
+        floors_count=9.0,
+        living_area=0.0 if service else 1840.0,
+        building_area=2300.0,
+        service=service or [],
+        broke_restriction_zone=False,
+        residents_number=0.0 if service else 61.0,
+    )
+
+
 class FakeHandler:
     """Пишет в журнал каждый вызов — по нему и проверяется порядок."""
 
@@ -57,6 +74,8 @@ class FakeHandler:
             return ZONE_TYPES
         if path.endswith("/physical_object_types"):
             return OBJECT_TYPES
+        if path.endswith("/service_types"):
+            return SERVICE_TYPES
         if path.endswith("/territory"):
             return {"geometry": {"type": "Polygon", "coordinates": []}}
         return []
@@ -68,7 +87,7 @@ class FakeHandler:
         if path == "/api/v1/projects":
             return {"project_id": 900}
         if path.endswith("/physical_objects"):
-            return {"physical_object": {"physical_object_id": 555}}
+            return {"physical_object": {"physical_object_id": 555}, "object_geometry": {"object_geometry_id": 666}}
         if path.startswith("/api/v1/scenarios/") and path.count("/") == 4:
             return {"scenario_id": 777}
         if path.endswith("/functional_zones"):
@@ -91,6 +110,30 @@ class RoadsOnlyHandler(FakeHandler):
     async def get(self, path: str, params=None, headers=None) -> Any:
         await super().get(path, params, headers)
         return [{"physical_object_type_id": 52, "name": "Местная дорога"}]
+
+
+class ServiceRejectingHandler(FakeHandler):
+    """Urban API rejects one service type and accepts everything else."""
+
+    def __init__(self, rejected_service_type_id: int):
+        super().__init__()
+        self.rejected = rejected_service_type_id
+
+    async def post(self, path: str, json_data=None, params=None, headers=None) -> Any:
+        if path.endswith("/services") and json_data["service_type_id"] == self.rejected:
+            self.calls.append(("POST", path, json_data))
+            raise HTTPException(status_code=422, detail={"msg": "сервис не принят"})
+        return await super().post(path, json_data, params, headers)
+
+
+class NoGeometryIdHandler(FakeHandler):
+    """The physical object is created, but the response lacks its geometry."""
+
+    async def post(self, path: str, json_data=None, params=None, headers=None) -> Any:
+        response = await super().post(path, json_data, params, headers)
+        if path.endswith("/physical_objects"):
+            return {"physical_object": response["physical_object"]}
+        return response
 
 
 class FakeTokens:
@@ -187,24 +230,95 @@ async def test_zone_id_unknown_to_the_stand_is_skipped_not_guessed():
 @pytest.mark.asyncio
 async def test_building_takes_two_requests_and_reuses_the_returned_id():
     writer, handler = build_writer()
-    written, types = await writer.add_buildings(7, territory_id=42, features=[_building(storeys_count=16)])
-    assert (written, types) == (1, [4])
+    written = await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    assert (written.written, written.failed, written.object_type_ids) == (1, 0, [4])
     assert handler.paths() == ["/api/v1/scenarios/7/physical_objects", "/api/v1/scenarios/7/buildings"]
     building = handler.payload("/buildings")
     assert building["physical_object_id"] == 555
-    assert building["floors"] == 16
+    assert building["building_area_modeled"] == 2300.0
     assert building["is_scenario_object"] is True
+
+
+@pytest.mark.asyncio
+async def test_floors_are_read_from_the_key_genbuilder_sends():
+    """GenBuilder sends `floors_count`; reading any other key wrote `floors: null` for every building."""
+    writer, handler = build_writer()
+    await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    assert handler.payload("/buildings")["floors"] == 9
 
 
 @pytest.mark.asyncio
 async def test_residential_and_other_buildings_get_different_types():
     """Свести жильё и общественно-деловую застройку в один тип — соврать о назначении."""
     writer, handler = build_writer()
-    written, types = await writer.add_buildings(
-        7, territory_id=42, features=[_building("residential"), _building("business")]
-    )
-    assert (written, types) == (2, [4, 5])
+    written = await writer.add_buildings(7, territory_id=42, features=[_building("residential"), _building("business")])
+    assert (written.written, written.object_type_ids) == (2, [4, 5])
     assert sorted(body["physical_object_type_id"] for body in handler.payloads("/physical_objects")) == [4, 5]
+
+
+@pytest.mark.asyncio
+async def test_service_building_is_not_a_dwelling_and_carries_its_services():
+    """GenBuilder places schools in the residential zone; typed as «Жилой дом» they would get residents."""
+    writer, handler = build_writer()
+    written = await writer.add_buildings(
+        7, territory_id=42, features=[_genbuilder_building(service=[{"Школа": 812.6}])]
+    )
+    assert handler.payload("/physical_objects")["physical_object_type_id"] == 5
+    service = handler.payload("/services")
+    assert service["service_type_id"] == 22
+    assert service["capacity"] == 813
+    assert (service["physical_object_id"], service["object_geometry_id"]) == (555, 666)
+    assert service["is_scenario_physical_object"] is True
+    assert service["is_scenario_geometry"] is True
+    assert (written.services_written, written.service_type_ids) == (1, [22])
+
+
+@pytest.mark.asyncio
+async def test_unknown_service_is_named_and_its_building_is_still_written():
+    writer, handler = build_writer()
+    written = await writer.add_buildings(
+        7, territory_id=42, features=[_genbuilder_building(service=[{"Космодром": 1.0}, {"Детский сад": 150.0}])]
+    )
+    assert written.written == 1
+    assert written.unknown_service_names == ["Космодром"]
+    assert [body["service_type_id"] for body in handler.payloads("/services")] == [21]
+
+
+@pytest.mark.asyncio
+async def test_service_catalogue_is_not_requested_without_services():
+    writer, handler = build_writer()
+    await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    assert "/api/v1/service_types" not in handler.paths("GET")
+
+
+@pytest.mark.asyncio
+async def test_failed_buildings_are_counted_and_not_announced():
+    writer, _ = build_writer(FakeHandler(fail_on="/buildings"))
+    written = await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    assert (written.written, written.failed, written.object_type_ids) == (0, 1, [])
+
+
+@pytest.mark.asyncio
+async def test_rejected_service_keeps_its_building_and_the_other_services():
+    """The physical object and the building are written before the services; a lost service must not unwrite them."""
+    writer, handler = build_writer(ServiceRejectingHandler(rejected_service_type_id=22))
+    written = await writer.add_buildings(
+        7, territory_id=42, features=[_genbuilder_building(service=[{"Школа": 800.0}, {"Детский сад": 150.0}])]
+    )
+    assert (written.written, written.failed, written.object_type_ids) == (1, 0, [5])
+    assert (written.services_written, written.services_failed, written.service_type_ids) == (1, 1, [21])
+    assert handler.paths().count("/api/v1/scenarios/7/buildings") == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_geometry_id_loses_the_services_not_the_building():
+    writer, handler = build_writer(NoGeometryIdHandler())
+    written = await writer.add_buildings(
+        7, territory_id=42, features=[_genbuilder_building(service=[{"Школа": 800.0}])]
+    )
+    assert (written.written, written.failed, written.object_type_ids) == (1, 0, [5])
+    assert (written.services_written, written.services_failed) == (0, 1)
+    assert not handler.payloads("/services")
 
 
 @pytest.mark.asyncio
@@ -224,7 +338,7 @@ async def test_missing_building_type_names_what_is_available():
 async def test_broker_is_notified_after_the_data_is_written():
     """Сервисы оценок по сообщению идут читать сценарий — опередить запись нельзя."""
     publisher, handler, _ = build_publisher()
-    await publish(publisher, buildings={"features": [_building(storeys_count=9)]})
+    await publish(publisher, buildings={"features": [_genbuilder_building()]})
     paths = handler.paths()
     broker = next(index for index, path in enumerate(paths) if "/api/broker/" in path)
     assert paths.index("/api/v1/scenarios/777/functional_zones") < broker
@@ -236,6 +350,60 @@ async def test_broker_message_lists_the_types_actually_written():
     publisher, handler, _ = build_publisher()
     await publish(publisher, buildings={"features": [_building("residential"), _building("business")]})
     assert handler.payload("scenario_objects_updated")["physical_object_types"] == [4, 5]
+
+
+@pytest.mark.asyncio
+async def test_broker_message_lists_the_service_types_written():
+    publisher, handler, _ = build_publisher()
+    published = await publish(publisher, buildings={"features": [_genbuilder_building(service=[{"Школа": 800.0}])]})
+    assert handler.payload("scenario_objects_updated")["service_types"] == [22]
+    assert published.services_written == 1
+
+
+@pytest.mark.asyncio
+async def test_failure_after_the_copy_keeps_the_scenario_findable():
+    """The copy already exists in Urban API; raising here lost its id and left an orphan."""
+    publisher, handler, _ = build_publisher(FakeHandler(fail_on="/functional_zones"))
+    published = await publish(publisher)
+    assert published.scenario_id == 777
+    assert published.failed_stage == "functional_zones"
+    assert published.notified is False
+    assert not [path for path in handler.paths() if "/api/broker/" in path]
+
+
+@pytest.mark.asyncio
+async def test_broker_failure_does_not_hide_the_written_data():
+    publisher, _, _ = build_publisher(FakeHandler(fail_on="/api/broker/"))
+    published = await publish(publisher)
+    assert (published.zones_written, published.failed_stage, published.notified) == (1, "broker", False)
+    assert published.notified_events == []
+
+
+@pytest.mark.asyncio
+async def test_broker_failure_halfway_records_the_message_already_sent():
+    """By the time the objects message fails, the zones message has already started scoring."""
+    publisher, _, _ = build_publisher(FakeHandler(fail_on="scenario_objects_updated"))
+    published = await publish(publisher, buildings={"features": [_genbuilder_building()]})
+    assert (published.failed_stage, published.notified) == ("broker", False)
+    assert published.notified_events == ["scenario_zones_updated"]
+    assert (published.zones_written, published.buildings_written) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_announced_scenario_lists_every_message_sent():
+    publisher, _, _ = build_publisher()
+    published = await publish(publisher, buildings={"features": [_genbuilder_building()]})
+    assert published.notified is True
+    assert published.notified_events == ["scenario_zones_updated", "scenario_objects_updated"]
+
+
+@pytest.mark.asyncio
+async def test_rejected_services_are_counted_and_left_out_of_the_broker_message():
+    publisher, handler, _ = build_publisher(ServiceRejectingHandler(rejected_service_type_id=22))
+    published = await publish(publisher, buildings={"features": [_genbuilder_building(service=[{"Школа": 800.0}])]})
+    assert (published.buildings_written, published.services_written, published.services_failed) == (1, 0, 1)
+    assert published.failed_stage is None
+    assert not handler.payload("scenario_objects_updated").get("service_types")
 
 
 @pytest.mark.asyncio
@@ -293,6 +461,19 @@ async def test_project_without_region_fails_loudly():
     assert exc_info.value.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_region_is_required_even_when_the_container_is_cached():
+    """A cached container bypassed the region check, and the buildings were then dropped without a word."""
+    reader = FakeUrbanReader()
+    publisher, handler, _ = build_publisher(reader=reader)
+    await publish(publisher, buildings={"features": [_genbuilder_building()]})
+    reader.region_id = None
+    with pytest.raises(HTTPException) as exc_info:
+        await publish(publisher, buildings={"features": [_genbuilder_building()]})
+    assert exc_info.value.status_code == 422
+    assert handler.paths().count("/api/v1/scenarios/835") == 1
+
+
 # --------------------------------------------------------------------- сервисная учётка
 
 
@@ -305,3 +486,32 @@ def test_service_account_id_comes_from_its_own_token():
 def test_broken_token_does_not_crash_the_service():
     assert _subject("не-jwt") is None
     assert _subject("header.$$$.signature") is None
+
+
+@pytest.mark.asyncio
+async def test_dwellings_are_counted_apart_from_the_rest():
+    """Очередь строительства считается только по жилым домам, и SIRTEP узнаёт их по типу."""
+    writer, _ = build_writer()
+    written = await writer.add_buildings(
+        7,
+        territory_id=42,
+        features=[_building("residential"), _building("residential"), _building("business")],
+    )
+    assert (written.written, written.living_written) == (3, 2)
+
+
+@pytest.mark.asyncio
+async def test_run_without_dwellings_says_so():
+    writer, _ = build_writer()
+    written = await writer.add_buildings(7, territory_id=42, features=[_building("industrial")])
+    assert written.living_written == 0
+
+
+@pytest.mark.asyncio
+async def test_published_scenario_reports_its_dwellings():
+    publisher, _, _ = build_publisher()
+    published = await publish(
+        publisher,
+        buildings={"type": "FeatureCollection", "features": [_building("residential"), _building("business")]},
+    )
+    assert published.living_buildings_written == 1
