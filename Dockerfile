@@ -2,14 +2,14 @@ FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    POETRY_VERSION=1.8.3 \
+    POETRY_VERSION=2.3.2 \
     POETRY_VIRTUALENVS_CREATE=false
 
 WORKDIR /app
 
 RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}"
 
-COPY pyproject.toml ./
+COPY pyproject.toml poetry.lock ./
 RUN poetry install --only main --no-root --no-interaction
 
 COPY app ./app
