@@ -1,0 +1,25 @@
+name: Kubernetes dev release
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: IDUclub/urban-assistant-deploy/.github/workflows/reusable-application-release.yaml@main
+    with:
+      service: buildplanner
+      test-command: |
+        python -m pip install --disable-pip-version-check uv==0.12.10 poetry==2.3.2
+        uv python install 3.11
+        poetry env use "$(uv python find 3.11)"
+        poetry install --no-interaction
+        poetry run black --check app tests
+        poetry run isort --check-only app tests
+        poetry run pylint app
+        poetry run pytest -q
+    secrets: inherit
