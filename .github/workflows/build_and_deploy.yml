@@ -1,0 +1,158 @@
+name: build_and_deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "deploy = full build+redeploy; diag_only = just tail container logs, no changes"
+        type: choice
+        options: [deploy, diag_only]
+        default: deploy
+
+env:
+  IMAGE_NAME: ${{ secrets.REGISTRY }}/buildplanner
+  CONTAINER_NAME: buildplanner
+
+jobs:
+  build:
+    if: github.event.inputs.mode != 'diag_only'
+    runs-on: 102_runner
+    outputs:
+      now: ${{ steps.date.outputs.now }}
+    steps:
+      - name: Set current date as env variable
+        id: date
+        run: echo "now=$(date +'%Y-%m-%dT%H-%M-%S')" >> "$GITHUB_OUTPUT"
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: copy_env
+        env:
+          APP_ENV: ${{ vars.APP_ENV || 'development' }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          LOG_FILE: ${{ vars.LOG_FILE || 'buildplanner.log' }}
+          URBAN_API: ${{ vars.URBAN_API || 'http://urban-api:8080' }}
+          GENPLANNER_API: ${{ vars.GENPLANNER_API || 'http://genplanner:8080' }}
+          GENBUILDER_API: ${{ vars.GENBUILDER_API || 'http://genbuilder:8080' }}
+          SIRTEP_API: ${{ vars.SIRTEP_API }}
+          CHAT_STORAGE_API: ${{ vars.CHAT_STORAGE_API || 'http://chat-history:8080' }}
+          LLM_API: ${{ vars.LLM_API || 'http://vllm:8000/v1' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_TEMPERATURE: ${{ vars.LLM_TEMPERATURE || '0.2' }}
+          LLM_TIMEOUT_SECONDS: ${{ vars.LLM_TIMEOUT_SECONDS || '900' }}
+          KEYCLOAK_URL: ${{ vars.KEYCLOAK_URL }}
+          KEYCLOAK_REALM: ${{ vars.KEYCLOAK_REALM || 'IDU' }}
+          KEYCLOAK_CLIENT_ID: ${{ vars.KEYCLOAK_CLIENT_ID || 'buildplanner' }}
+          KEYCLOAK_CLIENT_SECRET: ${{ secrets.KEYCLOAK_CLIENT_SECRET }}
+          PUBLISH_TO_URBAN: ${{ vars.PUBLISH_TO_URBAN || 'false' }}
+          SERVICE_PROJECT_PREFIX: ${{ vars.SERVICE_PROJECT_PREFIX || 'BuildPlanner' }}
+          PUBLISH_ZONE_SOURCE: ${{ vars.PUBLISH_ZONE_SOURCE || 'BuildPlanner' }}
+          PUBLISH_MAX_CONCURRENCY: ${{ vars.PUBLISH_MAX_CONCURRENCY || '8' }}
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+          MINIO_ADDRESS: ${{ vars.MINIO_ADDRESS }}
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          MINIO_BUCKET_NAME: ${{ vars.MINIO_BUCKET_NAME }}
+          MINIO_REGION: ${{ vars.MINIO_REGION || 'us-east-1' }}
+          GEO_LAYER_URL_TTL_SECONDS: ${{ vars.GEO_LAYER_URL_TTL_SECONDS || '3600' }}
+          OUTPUTS_DIR: ${{ vars.OUTPUTS_DIR || 'outputs' }}
+          SIRTEP_PERIODS: ${{ vars.SIRTEP_PERIODS || '20' }}
+          SIRTEP_MAX_AREA_PER_PERIOD: ${{ vars.SIRTEP_MAX_AREA_PER_PERIOD || '100000' }}
+          SCORE_WAIT_ENABLED: ${{ vars.SCORE_WAIT_ENABLED || 'true' }}
+          SCORE_INDICATOR_IDS: ${{ vars.SCORE_INDICATOR_IDS || '193,194,195,197,198,199,200,201,202,203,204' }}
+          SCORE_WAIT_TIMEOUT_SECONDS: ${{ vars.SCORE_WAIT_TIMEOUT_SECONDS || '600' }}
+          SCORE_POLL_SECONDS: ${{ vars.SCORE_POLL_SECONDS || '10' }}
+          URBAN_API_TIMEOUT_SECONDS: ${{ vars.URBAN_API_TIMEOUT_SECONDS || '60' }}
+          GENPLANNER_TIMEOUT_SECONDS: ${{ vars.GENPLANNER_TIMEOUT_SECONDS || '1800' }}
+          GENBUILDER_TIMEOUT_SECONDS: ${{ vars.GENBUILDER_TIMEOUT_SECONDS || '1800' }}
+          SIRTEP_TIMEOUT_SECONDS: ${{ vars.SIRTEP_TIMEOUT_SECONDS || '1800' }}
+          SIRTEP_PROVISION_TIMEOUT_SECONDS: ${{ vars.SIRTEP_PROVISION_TIMEOUT_SECONDS || '300' }}
+          SIRTEP_POLL_SECONDS: ${{ vars.SIRTEP_POLL_SECONDS || '5' }}
+          SSE_KEEPALIVE_SECONDS: ${{ vars.SSE_KEEPALIVE_SECONDS || '15' }}
+          GENPLANNER_CACHE_TTL_SECONDS: ${{ vars.GENPLANNER_CACHE_TTL_SECONDS || '3600' }}
+        run: |
+          cat > .env.development <<EOF
+          APP_ENV="$APP_ENV"
+          LOG_LEVEL="$LOG_LEVEL"
+          LOG_FILE="$LOG_FILE"
+          URBAN_API="$URBAN_API"
+          GENPLANNER_API="$GENPLANNER_API"
+          GENBUILDER_API="$GENBUILDER_API"
+          SIRTEP_API="$SIRTEP_API"
+          CHAT_STORAGE_API="$CHAT_STORAGE_API"
+          LLM_API="$LLM_API"
+          LLM_MODEL="$LLM_MODEL"
+          LLM_TEMPERATURE="$LLM_TEMPERATURE"
+          LLM_TIMEOUT_SECONDS="$LLM_TIMEOUT_SECONDS"
+          KEYCLOAK_URL="$KEYCLOAK_URL"
+          KEYCLOAK_REALM="$KEYCLOAK_REALM"
+          KEYCLOAK_CLIENT_ID="$KEYCLOAK_CLIENT_ID"
+          KEYCLOAK_CLIENT_SECRET="$KEYCLOAK_CLIENT_SECRET"
+          PUBLISH_TO_URBAN="$PUBLISH_TO_URBAN"
+          SERVICE_PROJECT_PREFIX="$SERVICE_PROJECT_PREFIX"
+          PUBLISH_ZONE_SOURCE="$PUBLISH_ZONE_SOURCE"
+          PUBLISH_MAX_CONCURRENCY="$PUBLISH_MAX_CONCURRENCY"
+          PUBLIC_BASE_URL="$PUBLIC_BASE_URL"
+          MINIO_ADDRESS="$MINIO_ADDRESS"
+          MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY"
+          MINIO_SECRET_KEY="$MINIO_SECRET_KEY"
+          MINIO_BUCKET_NAME="$MINIO_BUCKET_NAME"
+          MINIO_REGION="$MINIO_REGION"
+          GEO_LAYER_URL_TTL_SECONDS="$GEO_LAYER_URL_TTL_SECONDS"
+          OUTPUTS_DIR="$OUTPUTS_DIR"
+          SIRTEP_PERIODS="$SIRTEP_PERIODS"
+          SIRTEP_MAX_AREA_PER_PERIOD="$SIRTEP_MAX_AREA_PER_PERIOD"
+          SCORE_WAIT_ENABLED="$SCORE_WAIT_ENABLED"
+          SCORE_INDICATOR_IDS="$SCORE_INDICATOR_IDS"
+          SCORE_WAIT_TIMEOUT_SECONDS="$SCORE_WAIT_TIMEOUT_SECONDS"
+          SCORE_POLL_SECONDS="$SCORE_POLL_SECONDS"
+          URBAN_API_TIMEOUT_SECONDS="$URBAN_API_TIMEOUT_SECONDS"
+          GENPLANNER_TIMEOUT_SECONDS="$GENPLANNER_TIMEOUT_SECONDS"
+          GENBUILDER_TIMEOUT_SECONDS="$GENBUILDER_TIMEOUT_SECONDS"
+          SIRTEP_TIMEOUT_SECONDS="$SIRTEP_TIMEOUT_SECONDS"
+          SIRTEP_PROVISION_TIMEOUT_SECONDS="$SIRTEP_PROVISION_TIMEOUT_SECONDS"
+          SIRTEP_POLL_SECONDS="$SIRTEP_POLL_SECONDS"
+          SSE_KEEPALIVE_SECONDS="$SSE_KEEPALIVE_SECONDS"
+          GENPLANNER_CACHE_TTL_SECONDS="$GENPLANNER_CACHE_TTL_SECONDS"
+          EOF
+      - name: build
+        env:
+          NOW: ${{ steps.date.outputs.now }}
+        run: docker build -t "$IMAGE_NAME:$NOW" .
+      - name: push_to_registry
+        env:
+          NOW: ${{ steps.date.outputs.now }}
+        run: docker push "$IMAGE_NAME:$NOW"
+
+  stop_container:
+    if: github.event.inputs.mode != 'diag_only'
+    runs-on: 102_runner
+    needs: build
+    steps:
+      - name: stop_container
+        run: docker rm -f "$CONTAINER_NAME" || true
+
+  run_container:
+    if: github.event.inputs.mode != 'diag_only'
+    runs-on: 102_runner
+    needs: [build, stop_container]
+    env:
+      NOW: ${{ needs.build.outputs.now }}
+    steps:
+      - name: set env
+        run: echo "IMAGE=$IMAGE_NAME:$NOW" >> "$GITHUB_ENV"
+      - name: ensure_runtime_data_dir
+        run: mkdir -p runtime_data
+      - name: run
+        run: docker compose -f docker-compose.actions.yaml up -d
+      - name: verify_container_running
+        run: |
+          sleep 5
+          docker inspect --format='{{.Name}}: {{.State.Status}} (restarts: {{.RestartCount}})' "$CONTAINER_NAME"
+          docker logs --tail 50 "$CONTAINER_NAME"
+
+  diag_logs:
+    if: github.event.inputs.mode == 'diag_only'
+    runs-on: 102_runner
+    steps:
+      - name: tail_container_logs
+        run: docker logs --tail 200 "$CONTAINER_NAME"
