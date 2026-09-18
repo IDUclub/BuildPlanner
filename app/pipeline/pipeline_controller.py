@@ -68,7 +68,7 @@ def layer_file(
     slot: str,
     result_id: str,
     storage: ObjectStorage | None = Depends(get_object_storage),
-    settings = Depends(get_settings),
+    settings=Depends(get_settings),
 ) -> StreamingResponse | RedirectResponse:
     """Долговечная ссылка: MinIO отдаётся по свежему presigned URL, локальный слой — потоком."""
     not_found = http_exception(404, "Слой не найден", _input={"slot": slot, "result_id": result_id})

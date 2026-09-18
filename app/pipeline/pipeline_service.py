@@ -71,6 +71,14 @@ class PipelineRun:  # pylint: disable=too-many-instance-attributes  # мешок
     layers: LayerTarget = field(default_factory=LayerTarget)
 
 
+@dataclass(frozen=True)
+class PostPublishStages:
+    """Optional stages that read the scenario back after it is published."""
+
+    sirtep: SirtepClient | None = None
+    scores: ScoreWatcher | None = None
+
+
 class PipelineService:
     def __init__(
         self,
@@ -80,8 +88,7 @@ class PipelineService:
         cache_ttl_seconds: int = 3600,
         publisher: ScenarioPublisher | None = None,
         layer_store: LayerStore | None = None,
-        sirtep_client: SirtepClient | None = None,
-        score_watcher: ScoreWatcher | None = None,
+        post_publish: PostPublishStages | None = None,
     ):
         self._urban = urban_client
         self._genplanner = genplanner_client
@@ -89,8 +96,9 @@ class PipelineService:
         self._cache_ttl = cache_ttl_seconds
         self._publisher = publisher
         self._layer_store = layer_store
-        self._sirtep = sirtep_client
-        self._scores = score_watcher
+        stages = post_publish or PostPublishStages()
+        self._sirtep = stages.sirtep
+        self._scores = stages.scores
         self._zones_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ публичный API

@@ -12,7 +12,7 @@ from app.common.constants.pipeline_constants import SELECTION_INDICATOR_IDS
 from app.common.object_storage.object_storage import LocalStorage, ObjectStorageError
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.geo_layers import LayerStore
-from app.pipeline.pipeline_service import PipelineService
+from app.pipeline.pipeline_service import PipelineService, PostPublishStages
 
 
 def _value_row(indicator_id: int, value: float) -> dict[str, Any]:
@@ -673,7 +673,7 @@ def build_with_sirtep(sirtep: FakeSirtep, published: dict[str, Any] | None = Non
         FakeGenPlanner(),
         FakeGenBuilder(),
         publisher=FakePublisher(published=published or READY_PUBLISHED),
-        sirtep_client=sirtep,
+        post_publish=PostPublishStages(sirtep=sirtep),
     )
 
 

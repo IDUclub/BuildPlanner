@@ -34,13 +34,20 @@ SERVICE_TYPES = [
 ]
 
 
+# Large enough to survive the writer's vertex dedup (geo_clean.DEDUP_EPS_DEG).
+ZONE_SQUARE = {
+    "type": "Polygon",
+    "coordinates": [[[30.0, 60.0], [30.001, 60.0], [30.001, 60.001], [30.0, 60.001], [30.0, 60.0]]],
+}
+
+
 def _zone(territory_zone: Any = None, name: str | None = None) -> dict[str, Any]:
     properties: dict[str, Any] = {}
     if territory_zone is not None:
         properties["territory_zone"] = territory_zone
     if name is not None:
         properties["territory_zone_name"] = name
-    return {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}, "properties": properties}
+    return {"type": "Feature", "geometry": ZONE_SQUARE, "properties": properties}
 
 
 def _building(zone: str = "residential", **properties: Any) -> dict[str, Any]:

@@ -93,7 +93,5 @@ class LayerStore:
         key = object_key(result_id, slot)
         await asyncio.to_thread(self.storage.put_json, content, key)
         descriptor = layer_descriptor(slot, result_id, self._public_base_url, request_base_url)
-        descriptor["download_url"] = await asyncio.to_thread(
-            self.storage.presigned_url, key, self._url_ttl_seconds
-        )
+        descriptor["download_url"] = await asyncio.to_thread(self.storage.presigned_url, key, self._url_ttl_seconds)
         return descriptor

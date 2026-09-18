@@ -12,9 +12,9 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
-from datetime import timedelta
 from urllib.parse import urlsplit
 
 from loguru import logger
