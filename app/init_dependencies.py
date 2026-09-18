@@ -20,7 +20,7 @@ from app.common.llm.vllm_chat_client import VLLMChatClient
 from app.common.logging.init_logger import init_logger
 from app.common.object_storage.object_storage import ObjectStorage, ObjectStorageError, build_object_storage
 from app.pipeline.geo_layers import LayerStore
-from app.pipeline.pipeline_service import PipelineService
+from app.pipeline.pipeline_service import PipelineService, PostPublishStages
 from app.pipeline.scenario_publisher import ScenarioPublisher
 from app.settings import Settings
 
@@ -124,8 +124,7 @@ def init_dependencies(app: FastAPI) -> None:
             if app.state.object_storage is not None
             else None
         ),
-        sirtep_client=sirtep_client,
-        score_watcher=score_watcher,
+        post_publish=PostPublishStages(sirtep=sirtep_client, scores=score_watcher),
     )
 
     llm_client = None
