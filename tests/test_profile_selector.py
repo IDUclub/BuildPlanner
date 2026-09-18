@@ -28,6 +28,21 @@ def test_tie_is_resolved_by_lowest_indicator_id():
     assert first.profile_id == second.profile_id == 7  # 275 < 278
 
 
+def test_tie_prefers_buildable_over_lower_id():
+    """276 (рекреационная, id меньше) при равенстве уступает застраиваемому 277."""
+    selection = select_profile({276: 4.0, 277: 4.0, 278: 4.0, 280: 4.0})
+    assert selection.indicator_id == 277  # 276 не застраивается, следующий по id — 277
+    assert selection.profile_id == 3
+    assert selection.buildable is True
+
+
+def test_value_beats_buildability_on_no_tie():
+    """Застраиваемость — только тай-брейк: не застраиваемый с бóльшим значением побеждает."""
+    selection = select_profile({276: 0.9, 278: 0.5})
+    assert selection.profile_id == 2
+    assert selection.buildable is False
+
+
 def test_non_buildable_profile_is_flagged():
     selection = select_profile({276: 0.9, 274: 0.1})
     assert selection.profile_id == 2

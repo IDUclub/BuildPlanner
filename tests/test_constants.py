@@ -10,6 +10,8 @@ from app.common.constants.pipeline_constants import (
     PROFILE_NAMES,
     PROFILE_TARGETS,
     SELECTION_INDICATOR_IDS,
+    TERRITORY_ZONE_KIND_BY_ID,
+    TERRITORY_ZONE_KIND_NAMES,
 )
 
 GENBUILDER_ZONES = {"residential", "business", "industrial", "transport", "special", "unknown"}
@@ -74,3 +76,9 @@ def test_building_types_cover_every_genbuilder_zone():
     zones = {mapping[0] for mapping in GENPLANNER_TO_GENBUILDER_ZONE.values() if mapping is not None}
     assert zones - set(BUILDING_TYPE_NAME_BY_ZONE) == zones - {"residential"}
     assert DEFAULT_BUILDING_TYPE_NAME
+
+
+def test_map_labels_match_profile_names():
+    """Зона на карте и выбранный профиль в чате должны называться одинаково."""
+    for zone_id, kind in TERRITORY_ZONE_KIND_BY_ID.items():
+        assert PROFILE_NAMES[zone_id].startswith(TERRITORY_ZONE_KIND_NAMES[kind]), zone_id

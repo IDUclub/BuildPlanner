@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     urban_api: str = "https://urban-api.testing.idulab.ru"
     genplanner_api: str = "http://localhost:8081"
     genbuilder_api: str = "http://localhost:8082"
+    sirtep_api: str = ""
     chat_storage_api: str = ""
 
     # LLM
@@ -29,15 +30,38 @@ class Settings(BaseSettings):
     keycloak_client_secret: str = ""
 
     # публикация результата в Urban API
-    publish_to_urban: bool = True
+    publish_to_urban: bool = False
     service_project_prefix: str = "BuildPlanner"
     publish_zone_source: str = "BuildPlanner"
     publish_max_concurrency: int = 8
+
+    # хранилище слоёв для истории чата: MinIO, если заданы все четыре MINIO_*, иначе локальный диск
+    public_base_url: str = ""
+    outputs_dir: str = "outputs"
+    minio_address: str = ""
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket_name: str = ""
+    minio_region: str = "us-east-1"
+    geo_layer_url_ttl_seconds: int = 3600
+
+    # очерёдность строительства по опубликованному сценарию
+    sirtep_periods: int = 20
+    sirtep_max_area_per_period: int = 100_000
+
+    # ожидание оценок, посчитанных сторонними сервисами по опубликованному сценарию
+    score_wait_enabled: bool = True
+    score_indicator_ids: str = ""  # CSV ожидаемых индикаторов; пусто — фолбэк по «затиханию»
+    score_wait_timeout_seconds: int = 600
+    score_poll_seconds: int = 10
 
     # таймауты и лимиты
     urban_api_timeout_seconds: int = 60
     genplanner_timeout_seconds: int = 1800
     genbuilder_timeout_seconds: int = 1800
+    sirtep_timeout_seconds: int = 1800
+    sirtep_provision_timeout_seconds: int = 300
+    sirtep_poll_seconds: int = 5
     sse_keepalive_seconds: int = 15
     genplanner_cache_ttl_seconds: int = 3600
 
@@ -63,3 +87,26 @@ class Settings(BaseSettings):
         только `POST /api/v1/projects?user_id=...`.
         """
         return self.publish_to_urban and self.service_account_enabled
+
+    @property
+    def sirtep_enabled(self) -> bool:
+        """Очередь строительства считается по опубликованному сценарию.
+
+        Без записи в Urban API SIRTEP нечего читать: сценарий существует только у нас
+        в памяти, а он ходит за ним в Urban API сам.
+        """
+        return bool(self.sirtep_api) and self.urban_write_enabled
+
+    @property
+    def score_wait_active(self) -> bool:
+        """Ждать оценки есть смысл только там, где мы их и запускаем — под записью в Urban API.
+
+        Без публикации сценарий существует только у нас в памяти: сервисам нечего считать,
+        а нам — не по чему опрашивать индикаторы.
+        """
+        return self.score_wait_enabled and self.urban_write_enabled
+
+    @property
+    def score_indicator_id_list(self) -> tuple[int, ...]:
+        """Ожидаемый набор оценок из CSV. Пустой набор включает фолбэк по «затиханию»."""
+        return tuple(int(x) for x in self.score_indicator_ids.split(",") if x.strip())

@@ -69,8 +69,11 @@ class NoIndicatorValuesError(RuntimeError):
 def select_profile(values: dict[int, float]) -> ProfileSelection:
     """Возвращает профиль-победитель и полный скор-борд.
 
-    При равенстве значений выигрывает индикатор с меньшим id — так выбор
-    воспроизводим, а не зависит от порядка ответа Urban API.
+    Главный критерий — значение показателя. При равенстве значений предпочтение
+    отдаётся застраиваемому профилю: не застраиваемый победитель означал бы прогон,
+    в котором GenBuilder исключает часть кварталов впустую. Среди равных по
+    застраиваемости выигрывает индикатор с меньшим id — так выбор воспроизводим,
+    а не зависит от порядка ответа Urban API.
     """
     scored = {indicator_id: value for indicator_id, value in values.items() if indicator_id in INDICATOR_TO_PROFILE}
     if not scored:
@@ -93,7 +96,7 @@ def select_profile(values: dict[int, float]) -> ProfileSelection:
             )
             for indicator_id, value in scored.items()
         ),
-        key=lambda entry: (-entry.raw, entry.indicator_id),
+        key=lambda entry: (-entry.raw, entry.profile_id in NON_BUILDABLE_PROFILES, entry.indicator_id),
     )
 
     winner = scoreboard[0]

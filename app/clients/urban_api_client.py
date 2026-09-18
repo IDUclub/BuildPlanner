@@ -66,16 +66,12 @@ class UrbanApiClient:
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    async def get_project_id(self, scenario_id: int, token: str) -> int:
-        """`Scenario.project.project_id` — GenPlanner требует его отдельным параметром."""
-        project_id, _ = await self.get_project_ref(scenario_id, token)
-        return project_id
-
     async def get_project_ref(self, scenario_id: int, token: str) -> tuple[int, int | None]:
         """`project_id` и регион проекта — из одного ответа, чтобы не ходить дважды.
 
-        Регион (`project.region.id`) нужен только публикации: `ProjectPost.territory_id`
-        подписан как «project region identifier».
+        `project_id` GenPlanner требует отдельным параметром. Регион (`project.region.id`)
+        нужен GenBuilder — по его нормативам расставляются сервисы — и публикации:
+        `ProjectPost.territory_id` подписан как «project region identifier».
         """
         scenario = await self.get_scenario(scenario_id, token)
         project = (scenario or {}).get("project") or {}

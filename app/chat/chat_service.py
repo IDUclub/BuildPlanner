@@ -18,6 +18,7 @@ from app.common.llm.vllm_chat_client import VLLMChatClient, VLLMChatError
 from app.pipeline import events
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.indicators_view import highlights_table
+from app.pipeline.master_plan import summary_text
 from app.pipeline.pipeline_service import PipelineService
 
 TOKEN_CHUNK = 24
@@ -35,7 +36,13 @@ class ChatService:
         self._llm = llm_client
         self._storage = chat_storage
 
-    async def stream(self, scenario_id: int, turn: ChatTurnDTO, token: str) -> AsyncIterator[dict[str, Any]]:
+    async def stream(
+        self,
+        scenario_id: int,
+        turn: ChatTurnDTO,
+        token: str,
+        base_url: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         user_id = extract_user_id(token)
         chat_id = turn.chat_id
         history: list[dict[str, str]] = []
@@ -76,23 +83,13 @@ class ChatService:
 
         options = self._merge_options(turn.options, draft.get("patch") or {})
         summary_lines: list[str] = [reply]
+        file_parts: list[dict[str, Any]] = []
 
-        async for event in self._pipeline.stream(scenario_id, token, options):
-            if event["type"] == "territory_indicators":
-                # В текст ответа идёт только короткая сводка: полная таблица уехала
-                # событием, её рисует фронтенд, и дублировать её в сообщение незачем.
-                table = highlights_table(event.get("highlights") or [])
-                if table:
-                    summary_lines.append(f"Показатели территории:\n{table}")
-            if event["type"] == "profile_selected":
-                summary_lines.append(str(event.get("reason", "")))
-            if event["type"] == "scenario_published":
-                summary_lines.append(
-                    f"Результат сохранён сценарием {event.get('scenario_id')} "
-                    f"в проекте {event.get('project_id')} — по нему считаются оценки."
-                )
-            if event["type"] == "warning" and event.get("message"):
-                summary_lines.append(str(event["message"]))
+        async for event in self._pipeline.stream(scenario_id, token, options, base_url=base_url):
+            if event["type"] == "file" and (descriptor := event.get("content") or event).get("url"):
+                # Сами слои в историю не влезут — кладём ссылки, по ним фронтенд перерисует карту.
+                file_parts.append(ChatStorageClient.file_part(descriptor))
+            summary_lines.append(_summary_line(event))
             yield event
 
         message_id = await self._persist(
@@ -103,6 +100,7 @@ class ChatService:
             # Ручные переопределения должны пережить перезагрузку чата:
             # из текста реплики их потом не восстановить надёжно.
             metadata={"options": options.model_dump(exclude_none=True)},
+            extra_parts=file_parts,
         )
         yield events.done(chat_id, message_id)
 
@@ -139,13 +137,46 @@ class ChatService:
         text: str,
         user_id: str | None,
         metadata: dict[str, Any] | None = None,
+        extra_parts: list[dict[str, Any]] | None = None,
     ) -> str | None:
         if not (self._storage and chat_id and text):
             return None
+        parts = [ChatStorageClient.text_part(text), *(extra_parts or [])]
         try:
-            return await self._storage.add_message(
-                chat_id, role, [ChatStorageClient.text_part(text)], user_id, metadata=metadata
-            )
+            return await self._storage.add_message(chat_id, role, parts, user_id, metadata=metadata)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning("Не удалось сохранить сообщение в чат {}: {}", chat_id, exc)
             return None
+
+
+def _summary_line(event: dict[str, Any]) -> str:
+    """Что из события попадает в текст сохранённого ответа; пустая строка — ничего.
+
+    Порядок строк — порядок событий, поэтому справка по прогону оказывается последней.
+    """
+    kind = event["type"]
+    if kind == "territory_indicators":
+        # В текст ответа идёт только короткая сводка: полная таблица уехала событием,
+        # её рисует фронтенд, и дублировать её в сообщение незачем.
+        table = highlights_table(event.get("highlights") or [])
+        return f"Показатели территории:\n{table}" if table else ""
+    if kind == "profile_selected":
+        return str(event.get("reason", ""))
+    if kind == "scenario_published":
+        return (
+            f"Результат сохранён сценарием {event.get('scenario_id')} "
+            f"в проекте {event.get('project_id')} — {_scoring_status(event)}."
+        )
+    if kind == "master_plan_summary":
+        return summary_text(event)
+    if kind == "warning":
+        return str(event.get("message") or "")
+    return ""
+
+
+def _scoring_status(published: dict[str, Any]) -> str:
+    if published.get("notified"):
+        return "по нему считаются оценки"
+    if published.get("notified_events"):
+        return "расчёт оценок запущен частично"
+    return "расчёт оценок не запущен"

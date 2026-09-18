@@ -16,20 +16,55 @@
 
 import asyncio
 import time
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
+from fastapi import HTTPException
 from loguru import logger
 
+from app.clients.genbuilder_client import building_services
 from app.common.api_handlers.json_api_handler import AsyncJsonApiHandler
 from app.common.auth.service_token import ServiceTokenProvider
 from app.common.constants.pipeline_constants import (
     BUILDING_TYPE_NAME_BY_ZONE,
     DEFAULT_BUILDING_TYPE_NAME,
+    RESIDENTIAL_ZONE,
     ZONE_NAME_TO_PROFILE,
 )
 from app.common.exceptions.http_exception import http_exception
+from app.common.geometries.geo_clean import clean_geometry
 
 CATALOGUE_TTL_SECONDS = 3600
+
+
+@dataclass
+class BuildingsWritten:
+    """What `add_buildings` managed to write. Type lists cover written buildings only."""
+
+    written: int = 0
+    failed: int = 0
+    living_written: int = 0
+    services_written: int = 0
+    services_failed: int = 0
+    object_type_ids: list[int] = field(default_factory=list)
+    service_type_ids: list[int] = field(default_factory=list)
+    unknown_service_names: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _Service:
+    type_id: int
+    name: str
+    capacity: int | None
+
+
+@dataclass(frozen=True)
+class _BuildingOutcome:
+    """A building that is written; its services may be written only partly."""
+
+    type_id: int
+    service_type_ids: list[int]
+    services_failed: int
 
 
 class UrbanScenarioWriter:
@@ -46,6 +81,7 @@ class UrbanScenarioWriter:
         self._semaphore = asyncio.Semaphore(max(max_concurrency, 1))
         self._zone_types: tuple[float, dict[str, int], set[int]] | None = None
         self._object_types: tuple[float, dict[str, int]] | None = None
+        self._service_types: tuple[float, dict[str, int]] | None = None
 
     # ------------------------------------------------------------------ справочники
 
@@ -76,18 +112,17 @@ class UrbanScenarioWriter:
         return by_name, known
 
     async def object_type_ids(self) -> dict[str, int]:
-        cached = self._object_types
-        if cached and time.monotonic() - cached[0] < CATALOGUE_TTL_SECONDS:
-            return cached[1]
+        self._object_types = await self._name_catalogue(
+            self._object_types, "/api/v1/physical_object_types", "physical_object_type_id"
+        )
+        return self._object_types[1]
 
-        rows = await self._get("/api/v1/physical_object_types")
-        mapping = {
-            _normalize(row["name"]): row["physical_object_type_id"]
-            for row in (rows if isinstance(rows, list) else [])
-            if isinstance(row.get("name"), str) and isinstance(row.get("physical_object_type_id"), int)
-        }
-        self._object_types = (time.monotonic(), mapping)
-        return mapping
+    async def service_type_ids(self) -> dict[str, int]:
+        """GenBuilder names services after this catalogue: it takes them from the territory normatives."""
+        self._service_types = await self._name_catalogue(
+            self._service_types, "/api/v1/service_types", "service_type_id"
+        )
+        return self._service_types[1]
 
     async def building_type_id(self, zone: str | None = None) -> int:
         """Тип физобъекта под здание: жилое и нежилое — разные записи справочника."""
@@ -102,6 +137,23 @@ class UrbanScenarioWriter:
                 _detail={"доступно": sorted(mapping)[:50]},
             )
         return type_id
+
+    async def _name_catalogue(
+        self,
+        cached: tuple[float, dict[str, int]] | None,
+        path: str,
+        id_key: str,
+    ) -> tuple[float, dict[str, int]]:
+        if cached and time.monotonic() - cached[0] < CATALOGUE_TTL_SECONDS:
+            return cached
+
+        rows = await self._get(path)
+        mapping = {
+            _normalize(row["name"]): row[id_key]
+            for row in (rows if isinstance(rows, list) else [])
+            if isinstance(row.get("name"), str) and isinstance(row.get(id_key), int)
+        }
+        return time.monotonic(), mapping
 
     # ------------------------------------------------------------------ проект и сценарий
 
@@ -188,9 +240,16 @@ class UrbanScenarioWriter:
             if type_id is None:
                 skipped.add(str(properties.get("territory_zone_name") or properties.get("territory_zone")))
                 continue
+            geometry = clean_geometry(feature.get("geometry"))
+            if geometry is None:
+                logger.warning(
+                    "Зона «{}» пропущена: геометрия вырождена после чистки",
+                    properties.get("territory_zone_name") or properties.get("territory_zone"),
+                )
+                continue
             payload.append(
                 {
-                    "geometry": feature.get("geometry"),
+                    "geometry": geometry,
                     "functional_zone_type_id": type_id,
                     "name": properties.get("territory_zone_name"),
                     "year": year,
@@ -209,28 +268,50 @@ class UrbanScenarioWriter:
         scenario_id: int,
         territory_id: int,
         features: Sequence[dict[str, Any]],
-    ) -> tuple[int, list[int]]:
-        """Здание — это два запроса: физобъект с геометрией, затем строение на него.
+    ) -> BuildingsWritten:
+        """Здание — это два запроса: физобъект с геометрией, затем строение на него;
+        сервис GenBuilder — ещё по запросу на каждый сервис в здании.
 
         Массовой ручки у Urban API нет, поэтому шлём параллельно с ограничением:
         реальный прогон — это тысячи зданий, и пускать их без предела нельзя.
 
-        Возвращает число записанных зданий и задействованные типы физобъектов —
-        их ждёт сообщение в брокер.
-        """
-        type_ids = {zone: await self.building_type_id(zone) for zone in {_zone_of(f) for f in features}}
-        results = await asyncio.gather(
-            *(
-                self._add_building(scenario_id, territory_id, type_ids[_zone_of(feature)], feature)
-                for feature in features
-            ),
-            return_exceptions=True,
-        )
+        `living_written` считается отдельно: жилыми дома делает тип физобъекта, и по нему же
+        их ищет SIRTEP — без них он очередь строительства не построит.
 
+        Сервис с именем, которого нет в справочнике, не пишется, но здание остаётся:
+        подставлять тип сервиса наугад нельзя. Сервис, который Urban API не принял,
+        тоже не отменяет здание: физобъект и строение к этому моменту уже записаны.
+        """
+        type_ids = {kind: await self.building_type_id(kind) for kind in {_building_kind(f) for f in features}}
+        catalogue = await self.service_type_ids() if any(building_services(f) for f in features) else {}
+
+        unknown: set[str] = set()
+        jobs = []
+        for feature in features:
+            services, missing = _resolve_services(feature, catalogue)
+            unknown.update(missing)
+            jobs.append(
+                self._add_building(scenario_id, territory_id, type_ids[_building_kind(feature)], feature, services)
+            )
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+
+        written = [result for result in results if not isinstance(result, BaseException)]
         failures = [result for result in results if isinstance(result, BaseException)]
         if failures:
             logger.warning("Не записано зданий: {} из {}. Первая ошибка: {}", len(failures), len(results), failures[0])
-        return len(results) - len(failures), sorted(set(type_ids.values()))
+        if unknown:
+            logger.warning("Service types unknown to Urban API, services skipped: {}", sorted(unknown))
+        living_type_id = type_ids.get(RESIDENTIAL_ZONE)
+        return BuildingsWritten(
+            written=len(written),
+            failed=len(failures),
+            living_written=sum(1 for outcome in written if outcome.type_id == living_type_id),
+            services_written=sum(len(outcome.service_type_ids) for outcome in written),
+            services_failed=sum(outcome.services_failed for outcome in written),
+            object_type_ids=sorted({outcome.type_id for outcome in written}),
+            service_type_ids=sorted({type_id for outcome in written for type_id in outcome.service_type_ids}),
+            unknown_service_names=sorted(unknown),
+        )
 
     async def _add_building(
         self,
@@ -238,13 +319,21 @@ class UrbanScenarioWriter:
         territory_id: int,
         type_id: int,
         feature: dict[str, Any],
-    ) -> None:
+        services: Sequence[_Service],
+    ) -> _BuildingOutcome:
         properties = feature.get("properties") or {}
+        geometry = clean_geometry(feature.get("geometry"))
+        if geometry is None:
+            raise http_exception(
+                422,
+                "Геометрия здания вырождена после чистки",
+                _input={"name": properties.get("name")},
+            )
         async with self._semaphore:
             urban_object = await self._post(
                 f"/api/v1/scenarios/{scenario_id}/physical_objects",
                 {
-                    "geometry": feature.get("geometry"),
+                    "geometry": geometry,
                     "territory_id": territory_id,
                     "physical_object_type_id": type_id,
                     "name": properties.get("name"),
@@ -259,12 +348,65 @@ class UrbanScenarioWriter:
                 f"/api/v1/scenarios/{scenario_id}/buildings",
                 {
                     "physical_object_id": physical_object_id,
-                    "floors": _as_int(properties.get("storeys_count") or properties.get("floors")),
+                    "floors": _as_int(properties.get("floors_count")),
                     "building_area_modeled": _as_float(properties.get("building_area")),
                     "is_scenario_object": True,
                     "properties": {"generated_by": "buildplanner"},
                 },
             )
+            service_type_ids: list[int] = []
+            services_failed = 0
+            if services:
+                service_type_ids, services_failed = await self._add_services(
+                    scenario_id, physical_object_id, urban_object, services
+                )
+        return _BuildingOutcome(type_id, service_type_ids, services_failed)
+
+    async def _add_services(
+        self,
+        scenario_id: int,
+        physical_object_id: int,
+        urban_object: dict[str, Any],
+        services: Sequence[_Service],
+    ) -> tuple[list[int], int]:
+        """Service types written and the number of services lost.
+
+        The building is already in the scenario by now, so a lost service is counted, not raised:
+        raising would report the building as failed and drop its type from the broker message.
+        """
+        geometry_id = (urban_object.get("object_geometry") or {}).get("object_geometry_id")
+        if not isinstance(geometry_id, int):
+            logger.warning(
+                "Urban API returned no object_geometry_id for physical object {}, services skipped: {}",
+                physical_object_id,
+                [service.name for service in services],
+            )
+            return [], len(services)
+
+        written: list[int] = []
+        for service in services:
+            try:
+                await self._post(
+                    f"/api/v1/scenarios/{scenario_id}/services",
+                    {
+                        "physical_object_id": physical_object_id,
+                        "is_scenario_physical_object": True,
+                        "object_geometry_id": geometry_id,
+                        "is_scenario_geometry": True,
+                        "service_type_id": service.type_id,
+                        "name": service.name,
+                        "capacity": service.capacity,
+                        "is_capacity_real": False,
+                        "properties": {"generated_by": "buildplanner"},
+                    },
+                )
+            except HTTPException as exc:
+                logger.warning(
+                    "Service {} of physical object {} is not written: {}", service.name, physical_object_id, exc.detail
+                )
+                continue
+            written.append(service.type_id)
+        return written, len(services) - len(written)
 
     # ------------------------------------------------------------------ брокер
 
@@ -322,6 +464,24 @@ def _zone_type_id(properties: dict[str, Any], by_name: dict[str, int], known: se
 
 def _zone_of(feature: dict[str, Any]) -> str:
     return str((feature.get("properties") or {}).get("zone") or "")
+
+
+def _building_kind(feature: dict[str, Any]) -> str | None:
+    """GenBuilder puts service buildings into the residential zone, but they are not dwellings."""
+    return None if building_services(feature) else _zone_of(feature)
+
+
+def _resolve_services(feature: dict[str, Any], catalogue: dict[str, int]) -> tuple[list[_Service], list[str]]:
+    resolved: list[_Service] = []
+    missing: list[str] = []
+    for name, capacity in building_services(feature):
+        type_id = catalogue.get(_normalize(name))
+        if type_id is None:
+            missing.append(name)
+            continue
+        value = _as_float(capacity)
+        resolved.append(_Service(type_id=type_id, name=name, capacity=round(value) if value is not None else None))
+    return resolved, missing
 
 
 def _normalize(name: Any) -> str:

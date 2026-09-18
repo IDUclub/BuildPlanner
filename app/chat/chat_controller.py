@@ -29,7 +29,7 @@ async def chat_stream(
     """
     settings = get_settings(request)
     return EventSourceResponse(
-        sse_stream(service.stream(scenario_id, turn, token)),
+        sse_stream(service.stream(scenario_id, turn, token, base_url=str(request.base_url))),
         ping=settings.sse_keepalive_seconds,
         headers={"X-Accel-Buffering": "no"},
     )
