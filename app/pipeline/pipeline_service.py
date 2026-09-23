@@ -620,8 +620,9 @@ def _services_warning(diagnostics: dict[str, Any] | None) -> str | None:
 
     GenBuilder 0.1.3 отдаёт `service_diagnostics` (а `summary` при этом `null`), поэтому
     нули по сервисам иначе уходят молча. Сообщаем, когда сервисы запрашивались по нормативам,
-    но разместить удалось не все, и раскрываем причины: нет шаблона здания в GenBuilder,
-    не хватило места в кварталах, достигнут лимит площадки.
+    но разместить удалось не все, и раскрываем причины: тип не поддерживается GenBuilder,
+    нет шаблона здания, спрос меньше минимального шаблона, не хватило места в кварталах,
+    достигнут лимит площадки.
     """
     if not diagnostics:
         return None
@@ -632,11 +633,17 @@ def _services_warning(diagnostics: dict[str, Any] | None) -> str | None:
         return None
 
     reasons: list[str] = []
+    type_not_supported = diagnostics.get("unplaced_type_not_supported") or 0
     no_template = diagnostics.get("unplaced_no_template") or 0
+    demand_below_template = diagnostics.get("unplaced_demand_below_template") or 0
     no_space = diagnostics.get("unplaced_no_space") or 0
     site_limit = diagnostics.get("unplaced_site_limit") or 0
+    if type_not_supported:
+        reasons.append(f"тип не поддерживается — {type_not_supported}")
     if no_template:
         reasons.append(f"нет шаблона — {no_template}")
+    if demand_below_template:
+        reasons.append(f"спрос меньше здания — {demand_below_template}")
     if no_space:
         reasons.append(f"не хватило места — {no_space}")
     if site_limit:

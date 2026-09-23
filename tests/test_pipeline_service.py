@@ -12,7 +12,7 @@ from app.common.constants.pipeline_constants import SELECTION_INDICATOR_IDS
 from app.common.object_storage.object_storage import LocalStorage, ObjectStorageError
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.geo_layers import LayerStore
-from app.pipeline.pipeline_service import PipelineService, PostPublishStages
+from app.pipeline.pipeline_service import PipelineService, PostPublishStages, _services_warning
 
 
 def _value_row(indicator_id: int, value: float) -> dict[str, Any]:
@@ -346,6 +346,42 @@ async def test_failed_region_lookup_costs_only_the_services():
     assert "result" in types
     assert "error" not in types
     assert _services_warnings(events)
+
+
+def test_services_warning_reports_type_not_supported_and_demand_below_template():
+    """GenBuilder 0.1.4 (genbuilder_api#54) добавил эти причины отдельно от `unplaced_no_template`."""
+    message = _services_warning(
+        {
+            "services_requested": 3,
+            "services_placed": 1,
+            "unplaced_type_not_supported": 1,
+            "unplaced_no_template": 0,
+            "unplaced_demand_below_template": 1,
+            "unplaced_no_space": 0,
+            "unplaced_site_limit": 0,
+            "capacity_requested": 300.0,
+            "capacity_unplaced": 80.0,
+        }
+    )
+    assert message is not None
+    assert "причина не указана" not in message
+    assert "тип не поддерживается — 1" in message
+    assert "спрос меньше здания — 1" in message
+
+
+def test_services_warning_without_new_fields_still_reports_old_reasons():
+    """Старые ответы GenBuilder (без новых полей) не должны ломать причины."""
+    message = _services_warning(
+        {
+            "services_requested": 2,
+            "services_placed": 1,
+            "unplaced_no_template": 1,
+            "unplaced_no_space": 0,
+            "unplaced_site_limit": 0,
+        }
+    )
+    assert message is not None
+    assert "нет шаблона — 1" in message
 
 
 @pytest.mark.asyncio
