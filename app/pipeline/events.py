@@ -118,8 +118,9 @@ def master_plan_summary(summary: dict[str, Any]) -> dict[str, Any]:
     return {"type": "master_plan_summary", **summary}
 
 
-def token(content: str) -> dict[str, Any]:
-    return {"type": "token", "content": content}
+def chunk(text: str, last: bool = False) -> dict[str, Any]:
+    """Кусок текста ответа ассистента в формате gMART; последний несёт `done: true`."""
+    return {"type": "chunk", "content": {"text": text, "done": last}}
 
 
 def chat_created(chat_id: str, title: str) -> dict[str, Any]:

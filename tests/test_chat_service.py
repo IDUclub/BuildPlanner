@@ -126,3 +126,48 @@ async def test_summary_closes_the_saved_reply():
     assert "Очередь пропущена." in text
     assert text.index("Очередь пропущена.") < text.index("Что построено")
     assert "депо" in text
+
+
+def _short_summary() -> dict[str, Any]:
+    return build_summary(
+        buildings={"buildings": 12, "residents": 3400}, published={"scenario_id": 777}, schedule=None, provision=None
+    )
+
+
+async def _stream(pipeline: Any, storage: FakeStorage) -> list[dict[str, Any]]:
+    service = ChatService(pipeline, llm_client=None, chat_storage=storage)
+    turn = ChatTurnDTO(user_query="создай мастер-план территории")
+    return [event async for event in service.stream(835, turn, "token")]
+
+
+@pytest.mark.asyncio
+async def test_streamed_chunks_add_up_to_the_saved_reply():
+    """Фронтенд склеивает `chunk`-и и получает ровно то, что потом прочитает из истории."""
+    storage = FakeStorage()
+    streamed = await _stream(SummaryPipeline(_short_summary()), storage)
+    chunks = [event["content"] for event in streamed if event["type"] == "chunk"]
+    saved = next(text for role, text in storage.messages if role == "assistant")
+    assert "".join(chunk["text"] for chunk in chunks) == saved
+    assert [chunk["done"] for chunk in chunks] == [False] * (len(chunks) - 1) + [True]
+
+
+@pytest.mark.asyncio
+async def test_answer_text_has_no_event_type_of_its_own():
+    streamed = await _stream(SummaryPipeline(_short_summary()), FakeStorage())
+    assert "token" not in {event["type"] for event in streamed}
+    assert [event["type"] for event in streamed][-2:] == ["chunk", "done"]
+
+
+class ChatOnlyModel:
+    async def complete_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"action": "reply", "reply": "Уточните, пожалуйста, территорию."}
+
+
+@pytest.mark.asyncio
+async def test_reply_without_pipeline_still_closes_the_text():
+    service = ChatService(FakePipeline({}), llm_client=ChatOnlyModel(), chat_storage=FakeStorage())
+    streamed = [event async for event in service.stream(835, ChatTurnDTO(user_query="привет"), "token")]
+    chunks = [event["content"] for event in streamed if event["type"] == "chunk"]
+    assert "".join(chunk["text"] for chunk in chunks) == "Уточните, пожалуйста, территорию."
+    assert chunks[-1] == {"text": "", "done": True}
+    assert streamed[-1]["type"] == "done"
