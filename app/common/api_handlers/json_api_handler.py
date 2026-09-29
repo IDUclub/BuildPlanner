@@ -34,6 +34,14 @@ class AsyncJsonApiHandler:
     ) -> Any:
         return await self._request("POST", path, json_data=json_data, params=params, headers=headers)
 
+    async def delete(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        return await self._request("DELETE", path, params=params, headers=headers)
+
     async def _request(
         self,
         method: str,
@@ -57,7 +65,16 @@ class AsyncJsonApiHandler:
                         )
                     if not body:
                         return None
-                    return await response.json(content_type=None)
+                    try:
+                        return await response.json(content_type=None)
+                    except ValueError as exc:
+                        # 2xx с HTML прокси или обрезанным телом — это сбой сервиса, а не наш
+                        raise http_exception(
+                            502,
+                            f"{self.service_name} ответил не JSON",
+                            _input={"method": method, "url": url},
+                            _detail=body[:2000],
+                        ) from exc
         except aiohttp.ClientError as exc:
             raise http_exception(
                 503,

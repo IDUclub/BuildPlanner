@@ -811,3 +811,24 @@ async def test_summary_closes_every_run():
     assert events[-1]["type"] == "master_plan_summary"
     assert events[-1]["buildings"]["buildings"] == 1
     assert events[-1]["schedule"] is None
+
+
+class ExplodingGenPlanner(FakeGenPlanner):
+    async def run_func_generation(self, **kwargs) -> dict[str, Any]:
+        raise KeyError("access_token")
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_still_ends_the_stream_with_an_error():
+    """Не-HTTP исключение рвало SSE молча — клиент ждал `result`, которого не будет."""
+    events = await collect(build_service(genplanner=ExplodingGenPlanner()))
+    assert events[-1]["type"] == "error"
+    assert "KeyError" in json.dumps(events[-1], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_fails_the_sync_run_as_500():
+    service = build_service(genplanner=ExplodingGenPlanner())
+    with pytest.raises(HTTPException) as caught:
+        await service.run(1, "token", PipelineOptionsDTO())
+    assert caught.value.status_code == 500

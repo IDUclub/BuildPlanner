@@ -48,28 +48,32 @@ class VLLMChatClient:
         Читаем только `delta.content`: рассуждающие модели шлют ещё `reasoning_content`,
         и он пользователю не предназначен.
         """
-        async with aiohttp.ClientSession(timeout=self._timeout) as session:
-            async with session.post(self._url, json=self._payload(messages, True, **overrides)) as response:
-                if response.status != 200:
-                    raise VLLMChatError(f"vLLM ответил {response.status}: {(await response.text())[:500]}")
-                async for raw_line in response.content:
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                    if not line.startswith(_SSE_DATA_PREFIX):
-                        continue
-                    chunk = line[len(_SSE_DATA_PREFIX) :].strip()
-                    if chunk == _SSE_DONE:
-                        return
-                    try:
-                        frame = json.loads(chunk)
-                    except json.JSONDecodeError:
-                        # Один битый фрейм не повод рвать уже начатый ответ.
-                        logger.warning("Пропускаю нечитаемый фрейм vLLM: {}", chunk[:200])
-                        continue
-                    _raise_on_payload_error(frame)
-                    choices = frame.get("choices") or []
-                    content = (choices[0].get("delta") or {}).get("content") if choices else None
-                    if content:
-                        yield content
+        try:
+            async with aiohttp.ClientSession(timeout=self._timeout) as session:
+                async with session.post(self._url, json=self._payload(messages, True, **overrides)) as response:
+                    if response.status != 200:
+                        raise VLLMChatError(f"vLLM ответил {response.status}: {(await response.text())[:500]}")
+                    async for raw_line in response.content:
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line.startswith(_SSE_DATA_PREFIX):
+                            continue
+                        chunk = line[len(_SSE_DATA_PREFIX) :].strip()
+                        if chunk == _SSE_DONE:
+                            return
+                        try:
+                            frame = json.loads(chunk)
+                        except json.JSONDecodeError:
+                            # Один битый фрейм не повод рвать уже начатый ответ.
+                            logger.warning("Пропускаю нечитаемый фрейм vLLM: {}", chunk[:200])
+                            continue
+                        if not isinstance(frame, dict):
+                            logger.warning("Пропускаю фрейм vLLM не-объект: {}", chunk[:200])
+                            continue
+                        _raise_on_payload_error(frame)
+                        if content := _first_choice(frame, "delta").get("content"):
+                            yield content
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise VLLMChatError(f"vLLM недоступен: {type(exc).__name__}: {exc}") from exc
 
     async def complete_json(
         self,
@@ -82,18 +86,35 @@ class VLLMChatClient:
             "type": "json_schema",
             "json_schema": {"name": "answer", "schema": json_schema},
         }
-        async with aiohttp.ClientSession(timeout=self._timeout) as session:
-            async with session.post(self._url, json=self._payload(messages, False, **overrides)) as response:
-                if response.status != 200:
-                    raise VLLMChatError(f"vLLM ответил {response.status}: {(await response.text())[:500]}")
-                data = await response.json()
+        try:
+            async with aiohttp.ClientSession(timeout=self._timeout) as session:
+                async with session.post(self._url, json=self._payload(messages, False, **overrides)) as response:
+                    if response.status != 200:
+                        raise VLLMChatError(f"vLLM ответил {response.status}: {(await response.text())[:500]}")
+                    body = await response.text()
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise VLLMChatError(f"vLLM недоступен: {type(exc).__name__}: {exc}") from exc
 
+        try:
+            data = json.loads(body)
+        except ValueError as exc:
+            raise VLLMChatError(f"vLLM ответил не JSON: {body[:200]}") from exc
+        if not isinstance(data, dict):
+            raise VLLMChatError("vLLM вернул не объект")
         _raise_on_payload_error(data)
-        choices = data.get("choices") or []
-        content = (choices[0].get("message") or {}).get("content") if choices else None
-        if not content:
+        content = _first_choice(data, "message").get("content")
+        if not content or not isinstance(content, str):
             raise VLLMChatError("vLLM вернул пустой ответ")
         return _loads_json_object(content)
+
+
+def _first_choice(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    """`choices[0][key]` или пустой словарь, если форма ответа не та."""
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return {}
+    part = choices[0].get(key)
+    return part if isinstance(part, dict) else {}
 
 
 def _raise_on_payload_error(payload: dict[str, Any]) -> None:

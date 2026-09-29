@@ -160,6 +160,17 @@ class PipelineService:
             detail = exc.detail if isinstance(exc.detail, dict) else {"msg": str(exc.detail)}
             logger.error("Пайплайн сценария {} упал: {}", scenario_id, detail)
             yield events.error(stage=detail.get("stage", "pipeline"), detail=json.dumps(detail, ensure_ascii=False))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            # Страховка: без неё непредвиденный сбой рвёт SSE без `error`, и фронтенд висит.
+            # Отмену клиентом (CancelledError, GeneratorExit) это не ловит — они не Exception.
+            logger.exception("Пайплайн сценария {} упал с непредвиденной ошибкой", scenario_id)
+            detail = {
+                "stage": "pipeline",
+                "msg": "Внутренняя ошибка пайплайна",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            run.failure = http_exception(500, detail["msg"], _detail=detail)
+            yield events.error(stage="pipeline", detail=json.dumps(detail, ensure_ascii=False))
 
     async def territory_indicators(self, scenario_id: int, token: str) -> tuple[dict[str, Any] | None, str | None]:
         """Витрина показателей проекта. Никогда не роняет прогон — это справочная часть ответа.

@@ -43,13 +43,23 @@ class ServiceTokenProvider:
                             "Keycloak не выдал сервисный токен",
                             _detail=(await response.text())[:1000],
                         )
-                    data = await response.json()
+                    body = await response.text()
         except aiohttp.ClientError as exc:
             raise http_exception(503, "Keycloak недоступен", _detail=str(exc)) from exc
+        except TimeoutError as exc:
+            raise http_exception(504, "Keycloak не ответил за отведённое время") from exc
 
-        self._token = data["access_token"]
+        try:
+            data = json.loads(body)
+        except ValueError as exc:
+            raise http_exception(502, "Keycloak ответил не JSON", _detail=body[:1000]) from exc
+        token = data.get("access_token") if isinstance(data, dict) else None
+        if not isinstance(token, str) or not token:
+            raise http_exception(502, "В ответе Keycloak нет access_token", _detail=body[:1000])
+
+        self._token = token
         # 30 секунд запаса, чтобы не отдать токен, который протухнет в полёте
-        self._expires_at = time.monotonic() + max(int(data.get("expires_in", 60)) - 30, 10)
+        self._expires_at = time.monotonic() + max(_expires_in(data.get("expires_in")) - 30, 10)
         self._user_id = _subject(self._token) or self._user_id
         logger.debug("Получен сервисный токен, живёт {} с", data.get("expires_in"))
         return self._token
@@ -66,6 +76,14 @@ class ServiceTokenProvider:
         if not self._user_id:
             raise http_exception(502, "В сервисном токене нет claim `sub`")
         return self._user_id
+
+
+def _expires_in(value: object, default: int = 60) -> int:
+    """`expires_in` из ответа Keycloak; мусор в нём не повод отказаться от токена."""
+    try:
+        return int(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _subject(token: str) -> str | None:
