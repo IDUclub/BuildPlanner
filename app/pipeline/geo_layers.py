@@ -4,8 +4,10 @@
 только ссылки. Поэтому каждый слой после отправки пишется в хранилище под id прогона,
 а в поток и в историю уходит дескриптор — куда за ним сходить.
 
-`url` — долговечная API-ссылка, а `download_url` — свежая временная ссылка MinIO. Форма
-дескриптора совпадает с PZZ: фронтенд получает его в SSE и запрашивает слой отдельно.
+`url` — долговечный относительный путь: байты идут потоком через этот сервис, потому что
+MinIO из внешней сети недоступен. Адреса сервиса в ссылке нет: фронтенд сам подставляет
+базу по `source_service` — внутренний адрес пода, запомненный в истории, снаружи не открылся бы. `download_url` всегда пуст — прямых ссылок на MinIO нет.
+Форма дескриптора совпадает с PZZ: фронтенд получает его в SSE и запрашивает слой отдельно.
 """
 
 import asyncio
@@ -41,27 +43,12 @@ def object_key(result_id: str, slot: str) -> str:
     return f"{result_id}/{slot}.geojson"
 
 
-def durable_url(path: str, public_base_url: str | None, request_base_url: str | None) -> str:
-    """Абсолютная ссылка, если известен `PUBLIC_BASE_URL`, — именно она нужна истории чата.
-
-    Без него адрес берётся из входящего запроса, а в крайнем случае остаётся относительным:
-    живому потоку этого хватает, истории, открытой с другого origin, — нет.
-    """
-    base = public_base_url or request_base_url
-    return f"{base.rstrip('/')}{path}" if base else path
-
-
-def layer_descriptor(
-    slot: str,
-    result_id: str,
-    public_base_url: str | None = None,
-    request_base_url: str | None = None,
-) -> dict[str, Any]:
+def layer_descriptor(slot: str, result_id: str) -> dict[str, Any]:
     return {
         "name": slot,
         "title": SLOT_TITLES[slot],
         "role": "result",
-        "url": durable_url(f"{FILES_PATH}/{slot}/{result_id}", public_base_url, request_base_url),
+        "url": f"{FILES_PATH}/{slot}/{result_id}",
         "download_url": None,
         "filename": f"{slot}.geojson",
         "mime_type": MIME_TYPE,
@@ -72,26 +59,18 @@ def layer_descriptor(
 class LayerStore:
     """Пишет слой в хранилище и возвращает его дескриптор."""
 
-    def __init__(
-        self,
-        storage: ObjectStorage,
-        public_base_url: str | None = None,
-        url_ttl_seconds: int = 3600,
-    ):
+    def __init__(self, storage: ObjectStorage):
         self.storage = storage
-        self._public_base_url = public_base_url or None
-        self._url_ttl_seconds = url_ttl_seconds
 
     async def store(
         self,
         slot: str,
         result_id: str,
         content: dict[str, Any],
-        request_base_url: str | None = None,
+        _request_base_url: str | None = None,
     ) -> dict[str, Any]:
+        # Адрес запроса больше не нужен — ссылка относительная; параметр оставлен для вызывающих.
         # Клиент MinIO синхронный: в потоке событий его нельзя звать напрямую.
         key = object_key(result_id, slot)
         await asyncio.to_thread(self.storage.put_json, content, key)
-        descriptor = layer_descriptor(slot, result_id, self._public_base_url, request_base_url)
-        descriptor["download_url"] = await asyncio.to_thread(self.storage.presigned_url, key, self._url_ttl_seconds)
-        return descriptor
+        return layer_descriptor(slot, result_id)

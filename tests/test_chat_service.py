@@ -27,7 +27,7 @@ class FilesPipeline:
         for slot in ("zones", "buildings"):
             yield {
                 "type": "file",
-                **layer_descriptor(slot, "a" * 32, request_base_url=base_url),
+                **layer_descriptor(slot, "a" * 32),
             }
 
 
@@ -89,7 +89,7 @@ async def test_layers_are_saved_to_history_as_links():
     assert pipeline.base_url == "http://buildplanner/"
     files = [part for part in storage.parts["assistant"] if part["kind"] == "file"]
     assert [part["payload"]["name"] for part in files] == ["zones", "buildings"]
-    assert files[0]["payload"]["url"] == f"http://buildplanner/buildplanner/files/zones/{'a' * 32}"
+    assert files[0]["payload"]["url"] == f"/buildplanner/files/zones/{'a' * 32}"
     assert "download_url" not in files[0]["payload"]
     assert storage.parts["assistant"][0]["kind"] == "text"
 

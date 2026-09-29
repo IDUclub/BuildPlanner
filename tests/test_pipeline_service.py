@@ -567,7 +567,7 @@ async def test_every_layer_is_stored_right_after_it_is_streamed(tmp_path):
     assert types.index("file") < types.index("zones") < types.index("roads")
     assert types.index("file", types.index("roads")) < types.index("result")
     result_id = _files(events)[0]["content"]["url"].rsplit("/", 1)[-1]
-    assert _files(events)[0]["content"]["url"] == f"http://bp/buildplanner/files/zones/{result_id}"
+    assert _files(events)[0]["content"]["url"] == f"/buildplanner/files/zones/{result_id}"
     assert storage.exists(f"{result_id}/buildings.geojson")
 
 
