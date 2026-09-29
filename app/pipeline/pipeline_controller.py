@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from app.common.auth.bearer import verify_bearer_token
@@ -68,9 +68,8 @@ def layer_file(
     slot: str,
     result_id: str,
     storage: ObjectStorage | None = Depends(get_object_storage),
-    settings=Depends(get_settings),
-) -> StreamingResponse | RedirectResponse:
-    """Долговечная ссылка: MinIO отдаётся по свежему presigned URL, локальный слой — потоком."""
+) -> StreamingResponse:
+    """Долговечная ссылка: слой идёт потоком через API — MinIO из внешней сети недоступен."""
     not_found = http_exception(404, "Слой не найден", _input={"slot": slot, "result_id": result_id})
     if storage is None:
         raise not_found
@@ -78,8 +77,6 @@ def layer_file(
         key = object_key(result_id, slot)
         if not storage.exists(key):
             raise not_found
-        if url := storage.presigned_url(key, settings.geo_layer_url_ttl_seconds):
-            return RedirectResponse(url, status_code=307)
     except ValueError as exc:
         raise not_found from exc
     except ObjectStorageError as exc:

@@ -12,7 +12,6 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -40,10 +39,6 @@ class ObjectStorage(ABC):
     @abstractmethod
     def open_stream(self, object_key: str) -> Iterator[bytes]:
         """Байты объекта кусками, без загрузки целиком в память."""
-
-    @abstractmethod
-    def presigned_url(self, object_key: str, expires_seconds: int) -> str | None:
-        """Временная прямая ссылка на объект, если хранилище это поддерживает."""
 
 
 def _encode(payload: dict[str, Any]) -> bytes:
@@ -78,9 +73,6 @@ class LocalStorage(ObjectStorage):
         with self._resolve(object_key).open("rb") as handle:
             while chunk := handle.read(_CHUNK_SIZE):
                 yield chunk
-
-    def presigned_url(self, object_key: str, expires_seconds: int) -> None:
-        return None
 
 
 @contextmanager
@@ -135,15 +127,6 @@ class MinioStorage(ObjectStorage):
         finally:
             response.close()
             response.release_conn()
-
-    def presigned_url(self, object_key: str, expires_seconds: int) -> str | None:
-        try:
-            return self._client.presigned_get_object(
-                self._bucket, object_key, expires=timedelta(seconds=expires_seconds)
-            )
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.warning("Не удалось выпустить временную ссылку на {}: {}", object_key, exc)
-            return None
 
 
 def parse_minio_address(address: str) -> tuple[str, bool]:

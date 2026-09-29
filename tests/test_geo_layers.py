@@ -47,17 +47,20 @@ def test_local_storage_cannot_be_escaped(tmp_path):
         LocalStorage(str(tmp_path)).put_json(LAYER, "../outside.geojson")
 
 
-def test_descriptor_prefers_the_public_address():
-    """В истории чата ссылка должна открываться с фронтенда, а не только из пода."""
-    descriptor = layer_descriptor("roads", RESULT_ID, "https://planner.example/", "http://10.0.0.5:8080/")
-    assert descriptor["url"] == f"https://planner.example/buildplanner/files/roads/{RESULT_ID}"
+def test_descriptor_url_is_a_relative_path():
+    """Адрес сервиса в историю не пишется: фронт подставляет базу по `source_service`."""
+    descriptor = layer_descriptor("roads", RESULT_ID)
+    assert descriptor["url"] == f"/buildplanner/files/roads/{RESULT_ID}"
+    assert descriptor["source_service"] == "buildplanner"
     assert descriptor["download_url"] is None
     assert descriptor["mime_type"] == "application/geo+json"
 
 
-def test_descriptor_falls_back_to_the_request_address():
-    descriptor = layer_descriptor("zones", RESULT_ID, None, "http://localhost:8080/")
-    assert descriptor["url"] == f"http://localhost:8080/buildplanner/files/zones/{RESULT_ID}"
+@pytest.mark.asyncio
+async def test_store_ignores_the_request_address(tmp_path):
+    """Внутренний адрес пода из входящего запроса не должен попасть в ссылку."""
+    descriptor = await LayerStore(LocalStorage(str(tmp_path))).store("zones", RESULT_ID, LAYER, "http://10.0.0.5:8080/")
+    assert descriptor["url"] == f"/buildplanner/files/zones/{RESULT_ID}"
 
 
 def test_partial_minio_config_is_an_error_not_a_silent_fallback():
@@ -107,38 +110,32 @@ async def test_stored_layer_is_served_back_unchanged(tmp_path):
     descriptor = await LayerStore(storage).store("buildings", RESULT_ID, LAYER)
     assert descriptor["name"] == "buildings"
 
-    response = layer_file("buildings", RESULT_ID, storage, Settings(_env_file=None))
+    response = layer_file("buildings", RESULT_ID, storage)
     assert response.media_type == "application/geo+json"
     assert json.loads(await _read(response)) == LAYER
 
 
 @pytest.mark.asyncio
-async def test_durable_layer_url_redirects_to_a_fresh_object_storage_url(tmp_path):
-    class PresigningStorage(LocalStorage):
-        def presigned_url(self, object_key, expires_seconds):
-            assert object_key == f"{RESULT_ID}/zones.geojson"
-            assert expires_seconds == 120
-            return "https://minio.example/layer?signature=fresh"
+async def test_layer_is_proxied_through_the_api_never_redirected_to_storage(tmp_path):
+    """MinIO из внешней сети недоступен: ни ссылки на него в дескрипторе, ни редиректа."""
+    storage = LocalStorage(str(tmp_path))
+    descriptor = await LayerStore(storage).store("zones", RESULT_ID, LAYER)
+    assert descriptor["download_url"] is None
 
-    storage = PresigningStorage(str(tmp_path))
-    await LayerStore(storage, url_ttl_seconds=120).store("zones", RESULT_ID, LAYER)
-    settings = Settings(_env_file=None, geo_layer_url_ttl_seconds=120)
+    response = layer_file("zones", RESULT_ID, storage)
 
-    response = layer_file("zones", RESULT_ID, storage, settings)
-
-    assert isinstance(response, RedirectResponse)
-    assert response.status_code == 307
-    assert response.headers["location"] == "https://minio.example/layer?signature=fresh"
+    assert not isinstance(response, RedirectResponse)
+    assert json.loads(await _read(response)) == LAYER
 
 
 @pytest.mark.parametrize("slot, result_id", [("zones", RESULT_ID), ("secrets", RESULT_ID), ("zones", "nope")])
 def test_missing_or_malformed_layer_is_404(tmp_path, slot, result_id):
     with pytest.raises(HTTPException) as exc_info:
-        layer_file(slot, result_id, LocalStorage(str(tmp_path)), Settings(_env_file=None))
+        layer_file(slot, result_id, LocalStorage(str(tmp_path)))
     assert exc_info.value.status_code == 404
 
 
 def test_service_without_storage_answers_404():
     with pytest.raises(HTTPException) as exc_info:
-        layer_file("zones", RESULT_ID, None, Settings(_env_file=None))
+        layer_file("zones", RESULT_ID, None)
     assert exc_info.value.status_code == 404
