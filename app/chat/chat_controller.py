@@ -22,8 +22,9 @@ async def chat_stream(
     token: str = Depends(verify_bearer_token),
     service: ChatService = Depends(get_chat_service),
 ) -> EventSourceResponse:
-    """События: `chat_created`, `token`, `progress`, `indicators`, `profile_selected`,
+    """События: `chat_created`, `chunk`, `progress`, `indicators`, `profile_selected`,
     `zones`, `roads`, `result`, `file`, `warning`, `error` и всегда последним `done`.
+    Весь текст ответа ассистента приходит событиями `chunk`, последний — с `done: true`.
 
     HTTP-статус всегда 200 — фатальная ошибка приходит событием `error` внутри потока.
     """

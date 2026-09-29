@@ -12,7 +12,7 @@ from app.common.constants.pipeline_constants import SELECTION_INDICATOR_IDS
 from app.common.object_storage.object_storage import LocalStorage, ObjectStorageError
 from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.geo_layers import LayerStore
-from app.pipeline.pipeline_service import PipelineService, PostPublishStages
+from app.pipeline.pipeline_service import PipelineService, PostPublishStages, _services_warning
 
 
 def _value_row(indicator_id: int, value: float) -> dict[str, Any]:
@@ -348,6 +348,42 @@ async def test_failed_region_lookup_costs_only_the_services():
     assert _services_warnings(events)
 
 
+def test_services_warning_reports_type_not_supported_and_demand_below_template():
+    """GenBuilder 0.1.4 (genbuilder_api#54) добавил эти причины отдельно от `unplaced_no_template`."""
+    message = _services_warning(
+        {
+            "services_requested": 3,
+            "services_placed": 1,
+            "unplaced_type_not_supported": 1,
+            "unplaced_no_template": 0,
+            "unplaced_demand_below_template": 1,
+            "unplaced_no_space": 0,
+            "unplaced_site_limit": 0,
+            "capacity_requested": 300.0,
+            "capacity_unplaced": 80.0,
+        }
+    )
+    assert message is not None
+    assert "причина не указана" not in message
+    assert "тип не поддерживается — 1" in message
+    assert "спрос меньше здания — 1" in message
+
+
+def test_services_warning_without_new_fields_still_reports_old_reasons():
+    """Старые ответы GenBuilder (без новых полей) не должны ломать причины."""
+    message = _services_warning(
+        {
+            "services_requested": 2,
+            "services_placed": 1,
+            "unplaced_no_template": 1,
+            "unplaced_no_space": 0,
+            "unplaced_site_limit": 0,
+        }
+    )
+    assert message is not None
+    assert "нет шаблона — 1" in message
+
+
 @pytest.mark.asyncio
 async def test_manual_profile_skips_indicators():
     events = await collect(build_service(), PipelineOptionsDTO(profile_id=4))
@@ -531,7 +567,7 @@ async def test_every_layer_is_stored_right_after_it_is_streamed(tmp_path):
     assert types.index("file") < types.index("zones") < types.index("roads")
     assert types.index("file", types.index("roads")) < types.index("result")
     result_id = _files(events)[0]["content"]["url"].rsplit("/", 1)[-1]
-    assert _files(events)[0]["content"]["url"] == f"http://bp/buildplanner/files/zones/{result_id}"
+    assert _files(events)[0]["content"]["url"] == f"/buildplanner/files/zones/{result_id}"
     assert storage.exists(f"{result_id}/buildings.geojson")
 
 
@@ -775,3 +811,24 @@ async def test_summary_closes_every_run():
     assert events[-1]["type"] == "master_plan_summary"
     assert events[-1]["buildings"]["buildings"] == 1
     assert events[-1]["schedule"] is None
+
+
+class ExplodingGenPlanner(FakeGenPlanner):
+    async def run_func_generation(self, **kwargs) -> dict[str, Any]:
+        raise KeyError("access_token")
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_still_ends_the_stream_with_an_error():
+    """Не-HTTP исключение рвало SSE молча — клиент ждал `result`, которого не будет."""
+    events = await collect(build_service(genplanner=ExplodingGenPlanner()))
+    assert events[-1]["type"] == "error"
+    assert "KeyError" in json.dumps(events[-1], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_unexpected_exception_fails_the_sync_run_as_500():
+    service = build_service(genplanner=ExplodingGenPlanner())
+    with pytest.raises(HTTPException) as caught:
+        await service.run(1, "token", PipelineOptionsDTO())
+    assert caught.value.status_code == 500

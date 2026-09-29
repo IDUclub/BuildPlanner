@@ -39,8 +39,6 @@ def _build_object_storage(settings: Settings) -> ObjectStorage | None:
     except (ObjectStorageError, ImportError) as exc:
         logger.error("Хранилище слоёв не собрано, в историю чата слои не попадут: {}", exc)
         return None
-    if not settings.public_base_url:
-        logger.warning("PUBLIC_BASE_URL не задан: ссылки на слои строятся от адреса входящего запроса")
     return storage
 
 
@@ -115,15 +113,7 @@ def init_dependencies(app: FastAPI) -> None:
         genbuilder_client=genbuilder_client,
         cache_ttl_seconds=settings.genplanner_cache_ttl_seconds,
         publisher=publisher,
-        layer_store=(
-            LayerStore(
-                app.state.object_storage,
-                settings.public_base_url,
-                settings.geo_layer_url_ttl_seconds,
-            )
-            if app.state.object_storage is not None
-            else None
-        ),
+        layer_store=(LayerStore(app.state.object_storage) if app.state.object_storage is not None else None),
         post_publish=PostPublishStages(sirtep=sirtep_client, scores=score_watcher),
     )
 

@@ -1,8 +1,9 @@
 """Чат поверх пайплайна.
 
 Порядок событий повторяет GenPlanner: сначала (возможный) `warning` о загрузке истории,
-затем `chat_created`, затем `token`-и ответа модели, затем события самого прогона,
-и всегда последним — `done`. Сбои ChatStorage и vLLM не рвут поток.
+затем `chat_created`, затем `chunk`-и ответа модели, затем события самого прогона,
+и всегда последним — `done`. Весь текст ответа идёт одним типом `chunk`, как в gMART:
+склеенные `content.text` совпадают с сообщением, сохранённым в историю. Сбои ChatStorage и vLLM не рвут поток.
 """
 
 from typing import Any, AsyncIterator
@@ -72,12 +73,13 @@ class ChatService:
 
         reply = draft.get("reply") or DEFAULT_REPLY
         for start in range(0, len(reply), TOKEN_CHUNK):
-            yield events.token(reply[start : start + TOKEN_CHUNK])
+            yield events.chunk(reply[start : start + TOKEN_CHUNK])
 
         await self._persist(chat_id, "user", turn.user_query, user_id)
 
         if draft.get("action") != "run_pipeline":
             await self._persist(chat_id, "assistant", reply, user_id)
+            yield events.chunk("", last=True)
             yield events.done(chat_id)
             return
 
@@ -89,19 +91,22 @@ class ChatService:
             if event["type"] == "file" and (descriptor := event.get("content") or event).get("url"):
                 # Сами слои в историю не влезут — кладём ссылки, по ним фронтенд перерисует карту.
                 file_parts.append(ChatStorageClient.file_part(descriptor))
-            summary_lines.append(_summary_line(event))
             yield event
+            if line := _summary_line(event):
+                summary_lines.append(line)
+                yield events.chunk(f"\n{line}")
 
         message_id = await self._persist(
             chat_id,
             "assistant",
-            "\n".join(filter(None, summary_lines)),
+            "\n".join(summary_lines),
             user_id,
             # Ручные переопределения должны пережить перезагрузку чата:
             # из текста реплики их потом не восстановить надёжно.
             metadata={"options": options.model_dump(exclude_none=True)},
             extra_parts=file_parts,
         )
+        yield events.chunk("", last=True)
         yield events.done(chat_id, message_id)
 
     # ------------------------------------------------------------------ внутренности

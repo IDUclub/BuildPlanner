@@ -36,14 +36,12 @@ class Settings(BaseSettings):
     publish_max_concurrency: int = 8
 
     # хранилище слоёв для истории чата: MinIO, если заданы все четыре MINIO_*, иначе локальный диск
-    public_base_url: str = ""
     outputs_dir: str = "outputs"
     minio_address: str = ""
     minio_access_key: str = ""
     minio_secret_key: str = ""
     minio_bucket_name: str = ""
     minio_region: str = "us-east-1"
-    geo_layer_url_ttl_seconds: int = 3600
 
     # очерёдность строительства по опубликованному сценарию
     sirtep_periods: int = 20

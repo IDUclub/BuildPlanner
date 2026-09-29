@@ -203,7 +203,7 @@ zones  → file(name=zones)  → roads → file(name=roads) → … → result �
   "name": "zones",
   "title": "Территориальные зоны",
   "role": "result",
-  "url": "https://<PUBLIC_BASE_URL>/buildplanner/files/zones/3f2c…e1",
+  "url": "/buildplanner/files/zones/3f2c…e1",
   "download_url": null,
   "filename": "zones.geojson",
   "mime_type": "application/geo+json",
@@ -249,8 +249,9 @@ zones  → file(name=zones)  → roads → file(name=roads) → … → result �
 каталог `OUTPUTS_DIR` на диске, что годится только для локальной разработки. MinIO живёт
 в закрытой сети, поэтому файлы отдаются через сам сервис, а не прямыми ссылками в бакет.
 `MINIO_ADDRESS` — адрес S3 API вида `http://host:9000` (не веб-консоли); схема `https://` включает TLS.
-Ссылки строятся от `PUBLIC_BASE_URL` — адреса сервиса, как его видит браузер; без него
-берётся адрес входящего запроса, который за прокси бывает внутренним.
+`url` — относительный путь без адреса сервиса: фронт подставляет свою базу по
+`source_service` (у старых записей с абсолютной ссылкой отрезает origin). Так в историю
+не попадает внутренний адрес пода, который из внешней сети не открывается.
 
 ## Раскладка
 
