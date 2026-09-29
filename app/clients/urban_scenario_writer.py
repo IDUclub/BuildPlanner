@@ -35,6 +35,11 @@ from app.common.exceptions.http_exception import http_exception
 from app.common.geometries.geo_clean import clean_geometry
 
 CATALOGUE_TTL_SECONDS = 3600
+# Повторяем только то, что точно не дошло до записи: 502/503 — сервис или прокси отказал.
+# 504 не повторяем: POST мог выполниться, и повтор создаст дубль.
+TRANSIENT_STATUSES = frozenset({502, 503})
+WRITE_ATTEMPTS = 3
+WRITE_RETRY_BASE_SECONDS = 1.0
 
 
 @dataclass
@@ -79,6 +84,7 @@ class UrbanScenarioWriter:
         self._tokens = token_provider
         self._zone_source = zone_source
         self._semaphore = asyncio.Semaphore(max(max_concurrency, 1))
+        self._retry_base_seconds = WRITE_RETRY_BASE_SECONDS
         self._zone_types: tuple[float, dict[str, int], set[int]] | None = None
         self._object_types: tuple[float, dict[str, int]] | None = None
         self._service_types: tuple[float, dict[str, int]] | None = None
@@ -330,7 +336,7 @@ class UrbanScenarioWriter:
                 _input={"name": properties.get("name")},
             )
         async with self._semaphore:
-            urban_object = await self._post(
+            urban_object = await self._post_with_retry(
                 f"/api/v1/scenarios/{scenario_id}/physical_objects",
                 {
                     "geometry": geometry,
@@ -344,16 +350,21 @@ class UrbanScenarioWriter:
             if not isinstance(physical_object_id, int):
                 raise http_exception(502, "Urban API не вернул physical_object_id", _detail=urban_object)
 
-            await self._post(
-                f"/api/v1/scenarios/{scenario_id}/buildings",
-                {
-                    "physical_object_id": physical_object_id,
-                    "floors": _as_int(properties.get("floors_count")),
-                    "building_area_modeled": _as_float(properties.get("building_area")),
-                    "is_scenario_object": True,
-                    "properties": {"generated_by": "buildplanner"},
-                },
-            )
+            try:
+                await self._post_with_retry(
+                    f"/api/v1/scenarios/{scenario_id}/buildings",
+                    {
+                        "physical_object_id": physical_object_id,
+                        "floors": _as_int(properties.get("floors_count")),
+                        "building_area_modeled": _as_float(properties.get("building_area")),
+                        "is_scenario_object": True,
+                        "properties": {"generated_by": "buildplanner"},
+                    },
+                )
+            except HTTPException:
+                # Физобъект без здания оценщики видят как пустой контур — убираем его.
+                await self._discard_physical_object(scenario_id, physical_object_id)
+                raise
             service_type_ids: list[int] = []
             services_failed = 0
             if services:
@@ -386,7 +397,7 @@ class UrbanScenarioWriter:
         written: list[int] = []
         for service in services:
             try:
-                await self._post(
+                await self._post_with_retry(
                     f"/api/v1/scenarios/{scenario_id}/services",
                     {
                         "physical_object_id": physical_object_id,
@@ -407,6 +418,22 @@ class UrbanScenarioWriter:
                 continue
             written.append(service.type_id)
         return written, len(services) - len(written)
+
+    async def _discard_physical_object(self, scenario_id: int, physical_object_id: int) -> None:
+        """Compensating delete. Never raises: the caller is already reporting the original error."""
+        try:
+            await self._api.delete(
+                f"/api/v1/scenarios/{scenario_id}/physical_objects/{physical_object_id}",
+                params={"is_scenario_object": "true"},
+                headers=await self._headers(),
+            )
+        except HTTPException as exc:
+            logger.warning(
+                "Physical object {} of scenario {} is left without a building: {}",
+                physical_object_id,
+                scenario_id,
+                exc.detail,
+            )
 
     # ------------------------------------------------------------------ брокер
 
@@ -443,6 +470,19 @@ class UrbanScenarioWriter:
 
     async def _post(self, path: str, json_data: Any, params: dict[str, Any] | None = None) -> Any:
         return await self._api.post(path, json_data=json_data, params=params, headers=await self._headers())
+
+    async def _post_with_retry(self, path: str, json_data: Any) -> Any:
+        """POST объектов сценария: сотни параллельных записей, разовый 502/503 не должен терять здание."""
+        for attempt in range(1, WRITE_ATTEMPTS + 1):
+            try:
+                return await self._post(path, json_data)
+            except HTTPException as exc:
+                if exc.status_code not in TRANSIENT_STATUSES or attempt == WRITE_ATTEMPTS:
+                    raise
+                delay = self._retry_base_seconds * 2 ** (attempt - 1)
+                logger.warning("Urban API ответил {} на {}, повтор через {} с", exc.status_code, path, delay)
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _zone_type_id(properties: dict[str, Any], by_name: dict[str, int], known: set[int]) -> int | None:

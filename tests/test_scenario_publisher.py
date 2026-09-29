@@ -101,6 +101,10 @@ class FakeHandler:
             return json_data
         return {}
 
+    async def delete(self, path: str, params=None, headers=None) -> Any:
+        self.calls.append(("DELETE", path, params))
+        return None
+
     def paths(self, method: str = "POST") -> list[str]:
         return [path for verb, path, _ in self.calls if verb == method]
 
@@ -143,6 +147,23 @@ class NoGeometryIdHandler(FakeHandler):
         return response
 
 
+class FlakyHandler(FakeHandler):
+    """The first `failures` POSTs to `path_suffix` get `status`, the rest go through."""
+
+    def __init__(self, path_suffix: str, status: int, failures: int):
+        super().__init__()
+        self.path_suffix = path_suffix
+        self.status = status
+        self.failures_left = failures
+
+    async def post(self, path: str, json_data=None, params=None, headers=None) -> Any:
+        if path.endswith(self.path_suffix) and self.failures_left > 0:
+            self.failures_left -= 1
+            self.calls.append(("POST", path, json_data))
+            raise HTTPException(status_code=self.status, detail={"msg": "сбой"})
+        return await super().post(path, json_data, params, headers)
+
+
 class FakeTokens:
     def __init__(self, user_id: str = "svc-1"):
         self.user_id = user_id
@@ -169,7 +190,9 @@ class FakeUrbanReader:
 
 def build_writer(handler: FakeHandler | None = None) -> tuple[UrbanScenarioWriter, FakeHandler]:
     handler = handler or FakeHandler()
-    return UrbanScenarioWriter(handler, FakeTokens()), handler
+    writer = UrbanScenarioWriter(handler, FakeTokens())
+    writer._retry_base_seconds = 0
+    return writer, handler
 
 
 def build_publisher(handler: FakeHandler | None = None, reader: FakeUrbanReader | None = None):
@@ -303,6 +326,49 @@ async def test_failed_buildings_are_counted_and_not_announced():
     writer, _ = build_writer(FakeHandler(fail_on="/buildings"))
     written = await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
     assert (written.written, written.failed, written.object_type_ids) == (0, 1, [])
+
+
+@pytest.mark.asyncio
+async def test_failed_building_rolls_back_its_physical_object():
+    """A physical object without a building would stay in the scenario as an empty contour."""
+    writer, handler = build_writer(FakeHandler(fail_on="/buildings"))
+    await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    deletes = [(path, params) for verb, path, params in handler.calls if verb == "DELETE"]
+    assert deletes == [("/api/v1/scenarios/7/physical_objects/555", {"is_scenario_object": "true"})]
+
+
+@pytest.mark.asyncio
+async def test_written_building_is_not_rolled_back():
+    writer, handler = build_writer()
+    await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    assert handler.paths("DELETE") == []
+
+
+@pytest.mark.asyncio
+async def test_transient_error_is_retried():
+    writer, handler = build_writer(FlakyHandler("/buildings", status=503, failures=2))
+    written = await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    assert (written.written, written.failed) == (1, 0)
+    assert handler.paths().count("/api/v1/scenarios/7/buildings") == 3
+    assert handler.paths("DELETE") == []
+
+
+@pytest.mark.asyncio
+async def test_retries_are_bounded():
+    writer, handler = build_writer(FlakyHandler("/buildings", status=502, failures=10))
+    written = await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    assert (written.written, written.failed) == (0, 1)
+    assert handler.paths().count("/api/v1/scenarios/7/buildings") == 3
+    assert len(handler.paths("DELETE")) == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_timeout_is_not_retried():
+    """After a 504 the POST may have landed — a retry would write a duplicate."""
+    writer, handler = build_writer(FlakyHandler("/physical_objects", status=504, failures=1))
+    written = await writer.add_buildings(7, territory_id=42, features=[_genbuilder_building()])
+    assert written.failed == 1
+    assert handler.paths().count("/api/v1/scenarios/7/physical_objects") == 1
 
 
 @pytest.mark.asyncio
