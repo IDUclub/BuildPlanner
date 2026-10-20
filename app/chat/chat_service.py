@@ -21,6 +21,7 @@ from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.indicators_view import highlights_table
 from app.pipeline.master_plan import summary_text
 from app.pipeline.pipeline_service import PipelineService
+from app.service_reports import file_part, store_report
 
 TOKEN_CHUNK = 24
 DEFAULT_REPLY = "Запускаю подбор профиля и генерацию по сценарию."
@@ -32,10 +33,12 @@ class ChatService:
         pipeline: PipelineService,
         llm_client: VLLMChatClient | None,
         chat_storage: ChatStorageClient | None,
+        object_storage: Any = None,
     ):
         self._pipeline = pipeline
         self._llm = llm_client
         self._storage = chat_storage
+        self._object_storage = object_storage
 
     async def stream(
         self,
@@ -84,22 +87,41 @@ class ChatService:
             return
 
         options = self._merge_options(turn.options, draft.get("patch") or {})
-        summary_lines: list[str] = [reply]
+        report_data: dict[str, Any] = {"answer": [reply], "events": []}
         file_parts: list[dict[str, Any]] = []
 
         async for event in self._pipeline.stream(scenario_id, token, options, base_url=base_url):
             if event["type"] == "file" and (descriptor := event.get("content") or event).get("url"):
                 # Сами слои в историю не влезут — кладём ссылки, по ним фронтенд перерисует карту.
                 file_parts.append(ChatStorageClient.file_part(descriptor))
+            report_data["events"].extend(_report_events(event))
             yield event
             if line := _summary_line(event):
-                summary_lines.append(line)
+                report_data["answer"].append(line)
                 yield events.chunk(f"\n{line}")
+
+        async for event in store_report(
+            self._object_storage,
+            "buildplanner",
+            "/buildplanner",
+            "Отчёт о работе BuildPlanner",
+            "\n".join(report_data["answer"]),
+            {
+                "scenario_id": scenario_id,
+                "parameters": options.model_dump(exclude_none=True),
+                "events": report_data["events"],
+            },
+        ):
+            if event["type"] == "file":
+                file_parts.append({"kind": "file", "payload": file_part(event)})
+                yield events.file(file_part(event))
+            else:
+                yield event
 
         message_id = await self._persist(
             chat_id,
             "assistant",
-            "\n".join(summary_lines),
+            "\n".join(report_data["answer"]),
             user_id,
             # Ручные переопределения должны пережить перезагрузку чата:
             # из текста реплики их потом не восстановить надёжно.
@@ -185,3 +207,14 @@ def _scoring_status(published: dict[str, Any]) -> str:
     if published.get("notified_events"):
         return "расчёт оценок запущен частично"
     return "расчёт оценок не запущен"
+
+
+def _report_events(event: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep human-readable stage data without geometry or infrastructure errors."""
+    if event["type"] in {"territory_indicators", "profile_selected", "master_plan_summary", "scenario_published"}:
+        return [event]
+    if event["type"] in {"result", "sirtep_schedule", "sirtep_provision", "scores"}:
+        return [{"Этап": event["type"], "summary": event.get("summary") or {}}]
+    if event["type"] in {"warning", "error"}:
+        return [{"status": event["type"], "Примечание": event.get("message") or "Ошибка этапа"}]
+    return []

@@ -171,3 +171,22 @@ async def test_reply_without_pipeline_still_closes_the_text():
     assert "".join(chunk["text"] for chunk in chunks) == "Уточните, пожалуйста, территорию."
     assert chunks[-1] == {"text": "", "done": True}
     assert streamed[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_report_uses_the_file_envelope_and_survives_in_history(tmp_path):
+    from app.common.object_storage.object_storage import LocalStorage
+    from app.service_reports import stored_report_response
+
+    history = FakeStorage()
+    storage = LocalStorage(str(tmp_path))
+    service = ChatService(FakePipeline({"scenario_id": 777}), None, history, storage)
+    events = [event async for event in service.stream(835, ChatTurnDTO(user_query="Создай план"), "token")]
+    report = next(event["content"] for event in events if event["type"] == "file")
+    assert report["role"] == "report"
+    assert report["mime_type"] == "text/plain"
+    assert history.parts["assistant"][-1]["payload"] == report
+    text = stored_report_response(storage, report["url"].rsplit("/", 1)[1]).body.decode("utf-8")
+    assistant_text = next(text for role, text in history.messages if role == "assistant")
+    assert assistant_text in text
+    assert events[-1]["type"] == "done"
