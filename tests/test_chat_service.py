@@ -180,7 +180,7 @@ async def test_report_uses_the_file_envelope_and_survives_in_history(tmp_path):
 
     history = FakeStorage()
     storage = LocalStorage(str(tmp_path))
-    service = ChatService(FakePipeline({"scenario_id": 777}), None, history, storage)
+    service = ChatService(FakePipeline({"scenario_id": 777, "project_id": 900}), None, history, storage)
     events = [event async for event in service.stream(835, ChatTurnDTO(user_query="Создай план"), "token")]
     report = next(event["content"] for event in events if event["type"] == "file")
     assert report["role"] == "report"

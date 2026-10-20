@@ -104,7 +104,7 @@ class ChatService:
             self._object_storage,
             "buildplanner",
             "/buildplanner",
-            "Отчёт о работе BuildPlanner",
+            "Отчёт о комплексной планировке территории",
             "\n".join(report_data["answer"]),
             {
                 "scenario_id": scenario_id,
