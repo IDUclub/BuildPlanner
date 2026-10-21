@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from app.clients.score_watcher import ScoresResult
 from app.clients.urban_api_client import UrbanApiClient
 from app.common.constants.pipeline_constants import SELECTION_INDICATOR_IDS
 from app.common.object_storage.object_storage import LocalStorage, ObjectStorageError
@@ -802,6 +803,101 @@ async def test_pace_options_reach_sirtep():
     await collect(build_with_sirtep(sirtep), options)
     assert sirtep.schedule_calls[0]["periods"] == 8
     assert sirtep.provision_calls[0]["max_area_per_period"] == 25_000
+
+
+class FakeScoreWatcher:
+    def __init__(self, result: ScoresResult | None = None, error: Exception | None = None):
+        self.result = result or ScoresResult(values=[{"indicator": {"indicator_id": 193}}], arrived_ids=[193])
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def await_scores(self, *, scenario_id, since=None):
+        self.calls.append({"scenario_id": scenario_id, "since": since})
+        if self.error:
+            raise self.error
+        return self.result
+
+
+def build_with_scores(scores: FakeScoreWatcher, published: dict[str, Any] | None = None) -> PipelineService:
+    return PipelineService(
+        FakeUrban(),
+        FakeGenPlanner(),
+        FakeGenBuilder(),
+        publisher=FakePublisher(published=published or READY_PUBLISHED),
+        post_publish=PostPublishStages(scores=scores),
+    )
+
+
+def build_with_sirtep_and_scores(
+    sirtep: FakeSirtep, scores: FakeScoreWatcher, published: dict[str, Any] | None = None
+) -> PipelineService:
+    return PipelineService(
+        FakeUrban(),
+        FakeGenPlanner(),
+        FakeGenBuilder(),
+        publisher=FakePublisher(published=published or READY_PUBLISHED),
+        post_publish=PostPublishStages(sirtep=sirtep, scores=scores),
+    )
+
+
+@pytest.mark.asyncio
+async def test_sirtep_runs_before_scores_are_awaited():
+    """SIRTEP не ждёт оценок — он отрабатывает первым, опрос оценок идёт только следом."""
+    sirtep = FakeSirtep()
+    scores = FakeScoreWatcher()
+    events = await collect(build_with_sirtep_and_scores(sirtep, scores))
+    types = [event["type"] for event in events]
+    assert types.index("sirtep_provision") < types.index("scores")
+    assert scores.calls, "ScoreWatcher должен быть вызван"
+
+
+@pytest.mark.asyncio
+async def test_scores_stage_is_skipped_entirely_without_a_watcher():
+    """Так ведёт себя выключенный SCORE_WAIT_ENABLED: ScoreWatcher не создаётся, и шаг не опрашивает ничего."""
+    events = await collect(build_with_sirtep(FakeSirtep()))
+    types = [event["type"] for event in events]
+    assert "scores" not in types
+    assert not any(event.get("stage") == "await_scores" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_scores_are_requested_for_the_published_scenario_since_publication():
+    scores = FakeScoreWatcher()
+    await collect(build_with_scores(scores))
+    assert scores.calls[0]["scenario_id"] == 777
+    assert scores.calls[0]["since"]
+
+
+@pytest.mark.asyncio
+async def test_scores_are_skipped_when_broker_was_not_notified():
+    """Без объявления в брокер сервисам нечего считать — ждать оценки бессмысленно."""
+    published = {**READY_PUBLISHED, "notified": False, "failed_stage": "broker"}
+    scores = FakeScoreWatcher()
+    events = await collect(build_with_scores(scores, published))
+    assert not scores.calls
+    warning = next(event for event in events if event["type"] == "warning" and event["detail"] == "scores_skipped")
+    assert "расчёт оценок не запущен" in warning["message"]
+
+
+@pytest.mark.asyncio
+async def test_scores_timeout_is_reported_without_failing_the_run():
+    scores = FakeScoreWatcher(result=ScoresResult(values=[], arrived_ids=[], missing_ids=[193, 194], timed_out=True))
+    events = await collect(build_with_scores(scores))
+    types = [event["type"] for event in events]
+    assert "error" not in types
+    assert "scores" in types
+    warning = next(event for event in events if event["type"] == "warning" and event["detail"] == "scores_timeout")
+    assert "193" in warning["message"] and "194" in warning["message"]
+
+
+@pytest.mark.asyncio
+async def test_scores_failure_keeps_the_rest_of_the_run():
+    scores = FakeScoreWatcher(error=HTTPException(status_code=503, detail={"msg": "urban api down"}))
+    events = await collect(build_with_scores(scores))
+    types = [event["type"] for event in events]
+    assert "error" not in types
+    assert "result" in types and "master_plan_summary" in types
+    assert any(event["stage"] == "await_scores" for event in events if event["type"] == "warning")
 
 
 @pytest.mark.asyncio
