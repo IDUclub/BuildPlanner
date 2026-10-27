@@ -137,5 +137,5 @@ def init_dependencies(app: FastAPI) -> None:
     else:
         logger.warning("ChatStorage не настроен: история диалога сохраняться не будет")
 
-    app.state.chat_service = ChatService(app.state.pipeline_service, llm_client, chat_storage)
+    app.state.chat_service = ChatService(app.state.pipeline_service, llm_client, chat_storage, app.state.object_storage)
     logger.info("Зависимости собраны, окружение: {}", settings.app_env)

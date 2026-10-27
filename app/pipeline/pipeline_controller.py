@@ -18,6 +18,7 @@ from app.pipeline.dto.pipeline_dto import PipelineOptionsDTO
 from app.pipeline.geo_layers import MIME_TYPE, object_key
 from app.pipeline.pipeline_service import PipelineService
 from app.pipeline.schema.pipeline_schema import PipelineResultSchema
+from app.service_reports import stored_report_response
 from app.utils.sse import sse_stream
 
 router = APIRouter(prefix="/buildplanner", tags=["pipeline"])
@@ -138,3 +139,13 @@ async def profiles_reference() -> list[dict[str, object]]:
             }
         )
     return reference
+
+
+@router.get("/reports/{result_id}", summary="Открыть или скачать текстовый отчёт", response_model=None)
+def service_report(
+    result_id: str,
+    download: bool = False,
+    storage=Depends(get_object_storage),
+):
+
+    return stored_report_response(storage, result_id, download)
