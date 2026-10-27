@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     chat_storage_api: str = ""
 
     # LLM
-    llm_api: str = ""
-    llm_model: str = ""
+    vllm_base_url: str = ""
+    chat_model: str = ""
     llm_temperature: float = 0.2
     llm_timeout_seconds: int = 900
 
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
 
     @property
     def llm_enabled(self) -> bool:
-        return bool(self.llm_api and self.llm_model)
+        return bool(self.vllm_base_url and self.chat_model)
 
     @property
     def service_account_enabled(self) -> bool:

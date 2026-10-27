@@ -35,8 +35,8 @@ jobs:
           GENBUILDER_API: ${{ vars.GENBUILDER_API || 'http://genbuilder:8080' }}
           SIRTEP_API: ${{ vars.SIRTEP_API }}
           CHAT_STORAGE_API: ${{ vars.CHAT_STORAGE_API || 'http://chat-history:8080' }}
-          LLM_API: ${{ vars.LLM_API || 'http://vllm:8000/v1' }}
-          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          VLLM_BASE_URL: ${{ vars.VLLM_BASE_URL || 'http://vllm:8000/v1' }}
+          CHAT_MODEL: ${{ vars.CHAT_MODEL }}
           LLM_TEMPERATURE: ${{ vars.LLM_TEMPERATURE || '0.2' }}
           LLM_TIMEOUT_SECONDS: ${{ vars.LLM_TIMEOUT_SECONDS || '900' }}
           KEYCLOAK_URL: ${{ vars.KEYCLOAK_URL }}
@@ -77,8 +77,8 @@ jobs:
           GENBUILDER_API="$GENBUILDER_API"
           SIRTEP_API="$SIRTEP_API"
           CHAT_STORAGE_API="$CHAT_STORAGE_API"
-          LLM_API="$LLM_API"
-          LLM_MODEL="$LLM_MODEL"
+          VLLM_BASE_URL="$VLLM_BASE_URL"
+          CHAT_MODEL="$CHAT_MODEL"
           LLM_TEMPERATURE="$LLM_TEMPERATURE"
           LLM_TIMEOUT_SECONDS="$LLM_TIMEOUT_SECONDS"
           KEYCLOAK_URL="$KEYCLOAK_URL"

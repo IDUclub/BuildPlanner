@@ -120,8 +120,8 @@ def init_dependencies(app: FastAPI) -> None:
     llm_client = None
     if settings.llm_enabled:
         llm_client = VLLMChatClient(
-            base_url=settings.llm_api,
-            model=settings.llm_model,
+            base_url=settings.vllm_base_url,
+            model=settings.chat_model,
             temperature=settings.llm_temperature,
             timeout_seconds=settings.llm_timeout_seconds,
         )
