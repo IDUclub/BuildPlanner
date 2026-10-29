@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
     chat_model: str = ""
     llm_temperature: float = 0.2
     llm_timeout_seconds: int = 900
+    vllm_chat_priority: int = Field(default=-100, ge=-(2**63), le=2**63 - 1)
 
     # Keycloak service account: под ним ходим в ChatStorage и пишем сценарии в Urban API
     keycloak_url: str = ""

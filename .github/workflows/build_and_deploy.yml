@@ -39,6 +39,7 @@ jobs:
           CHAT_MODEL: ${{ vars.CHAT_MODEL }}
           LLM_TEMPERATURE: ${{ vars.LLM_TEMPERATURE || '0.2' }}
           LLM_TIMEOUT_SECONDS: ${{ vars.LLM_TIMEOUT_SECONDS || '900' }}
+          VLLM_CHAT_PRIORITY: ${{ vars.VLLM_CHAT_PRIORITY || '-100' }}
           KEYCLOAK_URL: ${{ vars.KEYCLOAK_URL }}
           KEYCLOAK_REALM: ${{ vars.KEYCLOAK_REALM || 'IDU' }}
           KEYCLOAK_CLIENT_ID: ${{ vars.KEYCLOAK_CLIENT_ID || 'buildplanner' }}
@@ -81,6 +82,7 @@ jobs:
           CHAT_MODEL="$CHAT_MODEL"
           LLM_TEMPERATURE="$LLM_TEMPERATURE"
           LLM_TIMEOUT_SECONDS="$LLM_TIMEOUT_SECONDS"
+          VLLM_CHAT_PRIORITY="$VLLM_CHAT_PRIORITY"
           KEYCLOAK_URL="$KEYCLOAK_URL"
           KEYCLOAK_REALM="$KEYCLOAK_REALM"
           KEYCLOAK_CLIENT_ID="$KEYCLOAK_CLIENT_ID"

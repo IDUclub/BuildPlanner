@@ -87,6 +87,11 @@ class ChatStorageClient:
         """Сплющивает многочастную историю в плоские сообщения для LLM."""
         history: list[dict[str, str]] = []
         for message in chat.get("messages", []):
+            role = message.get("role", "user")
+            # Qwen принимает system только в начале. Инструкции задаёт текущий
+            # промпт сервиса, из истории берём лишь реплики диалога.
+            if role not in {"user", "assistant"}:
+                continue
             texts = [
                 part.get("payload", {}).get("text", "")
                 for part in message.get("parts", [])
@@ -94,5 +99,5 @@ class ChatStorageClient:
             ]
             content = "\n".join(filter(None, texts)) or message.get("content") or ""
             if content:
-                history.append({"role": message.get("role", "user"), "content": content})
+                history.append({"role": role, "content": content})
         return history
