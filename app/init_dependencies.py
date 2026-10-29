@@ -124,6 +124,7 @@ def init_dependencies(app: FastAPI) -> None:
             model=settings.chat_model,
             temperature=settings.llm_temperature,
             timeout_seconds=settings.llm_timeout_seconds,
+            chat_priority=settings.vllm_chat_priority,
         )
     else:
         logger.warning("LLM не настроена: чат будет запускать прогон без разбора реплики")

@@ -83,3 +83,19 @@ async def test_history_is_flattened_for_the_llm():
         {"role": "user", "content": "привет"},
         {"role": "assistant", "content": "плоское сообщение"},
     ]
+
+
+def test_history_does_not_add_system_or_tool_messages_for_qwen():
+    chat = {
+        "messages": [
+            {"role": "system", "content": "Старые инструкции"},
+            {"role": "user", "content": "Привет"},
+            {"role": "tool", "content": "Служебный результат"},
+            {"role": "assistant", "content": "Здравствуйте"},
+        ]
+    }
+
+    assert ChatStorageClient.build_llm_history(chat) == [
+        {"role": "user", "content": "Привет"},
+        {"role": "assistant", "content": "Здравствуйте"},
+    ]
