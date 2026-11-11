@@ -4,8 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.chat import chat_controller
+from app.common.auth.bearer import verify_bearer_token
+from app.dependencies import get_settings
 from app.init_dependencies import init_dependencies
 from app.pipeline import pipeline_controller
+from app.resumable_streams import install_resumable_streams, keycloak_owner
 from app.system import logs_router
 from app.version import __version__
 
@@ -34,8 +37,18 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 app.include_router(pipeline_controller.router)
 app.include_router(chat_controller.router)
 app.include_router(logs_router.router)
+
+
+async def _stream_owner(request):
+    token = await verify_bearer_token(request)
+    settings = get_settings(request)
+    return await keycloak_owner(token, settings.keycloak_url, settings.keycloak_realm)
+
+
+install_resumable_streams(app, service="buildplanner", prefix="/buildplanner", authenticate=_stream_owner)
