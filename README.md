@@ -1,26 +1,28 @@
+**English** | [Русский](README.ru.md)
+
 # BuildPlanner API
 
-Оркестратор пайплайна **GenPlanner → GenBuilder**. По `scenario_id` выбирает градостроительный
-профиль из показателей Urban API, генерирует территориальные зоны и застраивает их —
-синхронным ответом или SSE-потоком в чате.
+Orchestrator of the **GenPlanner → GenBuilder** pipeline. Given a `scenario_id`, it selects an urban
+planning profile from the Urban API indicators, generates territorial zones and fills them with
+buildings, returning either a synchronous response or an SSE stream in the chat.
 
 
-## Пайплайн
+## Pipeline
 
-| Шаг | Что происходит | Где |
+| Step | What happens | Where |
 |---|---|---|
 | 1 | `GET /api/v1/scenarios/{id}/indicators_values` | Urban API |
-| 2 | Наибольший из 10 индикаторов семейства 269 → `profile_id` | здесь |
-| 3 | `GET /default/func_ratio` → `POST /run_func_generation` → зоны и дороги | GenPlanner |
-| 4 | Зоны → блоки таксономии GenBuilder + `targets_by_zone` | здесь |
-| 5 | `POST /generate/by_territory` → застройка | GenBuilder |
-| 6 | Сценарий под сервисной учёткой + сообщение в брокер → расчёт оценок | Urban API |
-| 7 | `GET /optimize/scheduler` → очередь строительства, `GET /optimize/teps` → обеспеченность | SIRTEP |
+| 2 | The largest of the 10 indicators of family 269 → `profile_id` | here |
+| 3 | `GET /default/func_ratio` → `POST /run_func_generation` → zones and roads | GenPlanner |
+| 4 | Zones → GenBuilder taxonomy blocks + `targets_by_zone` | here |
+| 5 | `POST /generate/by_territory` → buildings | GenBuilder |
+| 6 | Scenario under the service account + message to the broker → computation of assessments | Urban API |
+| 7 | `GET /optimize/scheduler` → construction schedule, `GET /optimize/teps` → service provision | SIRTEP |
 
-Индикаторы семейства 284 (286 бизнес-кластер, 287 промзона, 288 логистика) в выборе **не участвуют** —
-они измеряются в баллах и несравнимы с безразмерными 271–280.
+Indicators of family 284 (286 business cluster, 287 industrial zone, 288 logistics) **do not take part**
+in the selection: they are measured in points and are not comparable with the dimensionless 271–280.
 
-## Запуск
+## Running
 
 ```bash
 cp .env.example .env.development
@@ -28,8 +30,8 @@ poetry install --with dev
 poetry run uvicorn app.main:app --reload --port 8080
 ```
 
-Документация — на `/api/docs`. Сервис поднимается и без vLLM и без ChatStorage:
-чат тогда работает без разбора реплики и без сохранения истории (в логах будет предупреждение).
+Documentation is at `/api/docs`. The service starts even without vLLM and without ChatStorage:
+the chat then works without parsing the user's message and without saving history (a warning is logged).
 
 ```bash
 make format   # isort + black
@@ -37,71 +39,71 @@ make lint     # pylint
 make test     # pytest
 ```
 
-## vLLM и Qwen
+## vLLM and Qwen
 
-`VLLM_BASE_URL` задаёт адрес сервера, `CHAT_MODEL` — точный идентификатор из
-`GET /v1/models`, например `qwen3.8-27b`. Все запросы отключают thinking через
-`chat_template_kwargs: {"enable_thinking": false}`. История содержит только
-реплики `user` и `assistant`, системный промпт передаётся один раз в начале.
-Для Qwen3.8-27B на сервере нужен соответствующий `--reasoning-parser qwen3`.
+`VLLM_BASE_URL` sets the server address, `CHAT_MODEL` the exact model ID from
+`GET /v1/models`, for example `qwen3.8-27b`. All requests disable thinking via
+`chat_template_kwargs: {"enable_thinking": false}`. The history contains only
+`user` and `assistant` messages; the system prompt is sent once at the beginning.
+Qwen3.8-27B requires the matching `--reasoning-parser qwen3` on the server.
 
-Как в GenPlanner, один структурный вызов объединяет разбор параметров, решение,
-ответ и заголовок чата. Он использует `priority=-100` (live / blocking),
-настраиваемый через `VLLM_CHAT_PRIORITY`. Потоковые вызовы клиента используют
-тот же приоритет. Значение — знаковое 64-битное целое; `0` отключает приоритет.
-Ненулевые значения требуют `--scheduling-policy priority` на vLLM.
+As in GenPlanner, a single structured call combines parameter parsing, the decision,
+the answer and the chat title. It uses `priority=-100` (live / blocking),
+configurable via `VLLM_CHAT_PRIORITY`. Streaming client calls use the same
+priority. The value is a signed 64-bit integer; `0` disables prioritization.
+Non-zero values require `--scheduling-policy priority` on vLLM.
 
-Если `content` пуст, клиент принимает целый JSON из `reasoning` или
-`reasoning_content` только при `finish_reason=stop` и после проверки схемы.
-Иначе пустой ответ повторяется один раз. HTTP-ошибки не повторяются,
-текст рассуждений не попадает в сообщение об ошибке.
+If `content` is empty, the client accepts a complete JSON from `reasoning` or
+`reasoning_content` only when `finish_reason=stop` and after schema validation.
+Otherwise the empty response is retried once. HTTP errors are not retried, and
+the reasoning text never ends up in the error message.
 
-Итоговую текстовую сводку BuildPlanner составляет из событий пайплайна;
-отдельного LLM-вызова для неё нет.
+BuildPlanner composes the final text summary from the pipeline events;
+there is no separate LLM call for it.
 
-## Ручки
+## Endpoints
 
-| Метод | Путь | Назначение |
+| Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/buildplanner/scenarios/{id}/run` | синхронный прогон, один JSON |
-| `POST` | `/buildplanner/scenarios/{id}/run/stream` | тот же прогон потоком, без чата |
-| `POST` | `/buildplanner/scenarios/{id}/chat/stream` | диалоговый прогон (SSE) |
-| `GET` | `/buildplanner/scenarios/{id}/indicators` | показатели проекта таблицей, без генерации |
-| `GET` | `/buildplanner/reference/indicators` | какие индикаторы участвуют в выборе |
-| `GET` | `/buildplanner/reference/profiles` | профили и их застройка в GenBuilder |
-| `GET` | `/buildplanner/files/{slot}/{result_id}` | слой прогона из хранилища — по ссылке из события `file` |
-| `GET` | `/buildplanner/health`, `/buildplanner/logs/log_file` | служебные |
+| `POST` | `/buildplanner/scenarios/{id}/run` | synchronous run, a single JSON |
+| `POST` | `/buildplanner/scenarios/{id}/run/stream` | the same run as a stream, without chat |
+| `POST` | `/buildplanner/scenarios/{id}/chat/stream` | conversational run (SSE) |
+| `GET` | `/buildplanner/scenarios/{id}/indicators` | project indicators as a table, without generation |
+| `GET` | `/buildplanner/reference/indicators` | which indicators take part in the selection |
+| `GET` | `/buildplanner/reference/profiles` | profiles and their development in GenBuilder |
+| `GET` | `/buildplanner/files/{slot}/{result_id}` | a run layer from storage, via the link from the `file` event |
+| `GET` | `/buildplanner/health`, `/buildplanner/logs/log_file` | service endpoints |
 
-Все прогоны требуют `Authorization: Bearer <keycloak_token>` — токен прокидывается
-в Urban API, GenPlanner и GenBuilder как есть; сам сервис его не валидирует.
+All runs require `Authorization: Bearer <keycloak_token>`; the token is passed as is
+to Urban API, GenPlanner and GenBuilder; the service itself does not validate it.
 
-## События SSE
+## SSE events
 
-Словарь совпадает с GenPlanner и GenBuilder, плюс четыре своих — `indicators`,
-`territory_indicators`, `profile_selected` и `scenario_published`:
+The vocabulary matches GenPlanner and GenBuilder, plus four events of its own: `indicators`,
+`territory_indicators`, `profile_selected` and `scenario_published`:
 
 `chat_created` · `token` · `progress` · **`indicators`** · **`territory_indicators`** ·
 **`profile_selected`** · `zones` · `roads` · `result` · **`scenario_published`** ·
 `file` · `warning` · `error` · `done`
 
-HTTP-статус потока всегда `200`: фатальная ошибка приходит событием `error` внутри потока.
-Если GenBuilder упал, зоны всё равно уже отданы — это полезный частичный результат, а не провал.
+The HTTP status of the stream is always `200`: a fatal error arrives as an `error` event inside the stream.
+If GenBuilder fails, the zones have already been delivered; that is a useful partial result, not a failure.
 
-**Кадр.** Ключ `type` становится именем события, остальное — JSON в `data`, кириллица
-не экранируется. Между событиями идут ping-комментарии keep-alive — их пропускают.
+**Frame.** The `type` key becomes the event name, everything else is JSON in `data`; Cyrillic
+is not escaped. Keep-alive ping comments are sent between events and should be skipped.
 
 ```
 event: progress
 data: {"stage": "genplanner", "content": "Генерирую территориальные зоны"}
 ```
 
-**Порядок в `chat/stream`.** В квадратных скобках — события, которые приходят не всегда.
+**Order in `chat/stream`.** Events in square brackets do not always arrive.
 
 ```
-[warning load_history]                        история чата недоступна
-[chat_created]                                только для нового чата
-token × N                                     текст ответа модели кусками
-                                              — модель не запускает пайплайн: сразу done
+[warning load_history]                        chat history unavailable
+[chat_created]                                only for a new chat
+token × N                                     model answer text in chunks
+                                              — if the model does not start the pipeline: done right away
 progress fetch_indicators
 indicators
 territory_indicators | warning fetch_indicators
@@ -109,59 +111,59 @@ progress select_profile
 profile_selected  [warning non_buildable_profile]
 progress genplanner
 zones → file(zones)
-[roads → file(roads)]                         если GenPlanner вернул дороги
+[roads → file(roads)]                         if GenPlanner returned roads
 progress map_zones  [warning zones_skipped]
 [warning no_volume_target] [warning services_region_unknown]
 progress genbuilder
 progress assemble
-result → file(buildings) → [file × N от GenBuilder]
-[progress publish_scenario → scenario_published  [warning …]]   если публикация включена
+result → file(buildings) → [file × N from GenBuilder]
+[progress publish_scenario → scenario_published  [warning …]]   if publishing is enabled
 done
 ```
 
-`run/stream` отдаёт то же самое без `load_history`, `chat_created` и `token`; его `done` — `{}`.
+`run/stream` emits the same, without `load_history`, `chat_created` and `token`; its `done` is `{}`.
 
-**Геослои.** События `file`, `zones`, `roads` и `buildings` содержат компактный дескриптор
-в `content`, а не GeoJSON целиком. Фронтенд загружает `content.url`: это долговечная ссылка,
-которая на MinIO отвечает `307` с новой временной ссылкой; `content.download_url` можно
-использовать для немедленной загрузки. В истории чата сохраняется только `url`.
+**Geo layers.** The `file`, `zones`, `roads` and `buildings` events carry a compact descriptor
+in `content`, not the full GeoJSON. The frontend loads `content.url`: it is a durable link
+that, on MinIO, responds with `307` and a fresh temporary link; `content.download_url` can be
+used for an immediate download. Only `url` is stored in the chat history.
 
-**Что в событиях.**
+**What the events contain.**
 
-| Событие | Поля |
+| Event | Fields |
 |---|---|
 | `chat_created` | `chat_id`, `title` |
-| `token` | `content` — кусок текста, склеивать подряд |
-| `progress` | `stage`, `content` — готовая подпись стадии; у `select_profile` — причина выбора профиля |
-| `indicators` | `values` — десять индикаторов выбора: `indicator_id`, `name`, `profile_id`, `raw`, `normalized` |
-| `territory_indicators` | `total`, `highlights`, `sections` — см. «Витрина показателей» |
+| `token` | `content` — a chunk of text, concatenate in order |
+| `progress` | `stage`, `content` — ready-made stage caption; for `select_profile`, the reason for the profile choice |
+| `indicators` | `values` — the ten selection indicators: `indicator_id`, `name`, `profile_id`, `raw`, `normalized` |
+| `territory_indicators` | `total`, `highlights`, `sections` — see [Indicator showcase](#indicator-showcase) |
 | `profile_selected` | `profile_id`, `profile_name`, `indicator_id`, `reason`, `buildable`, `missing_indicator_ids`, `scoreboard` |
-| `zones` | `source: "genplanner"`, `content` — FeatureCollection с русскими атрибутами |
-| `roads` | `content` — FeatureCollection с русскими атрибутами |
-| `result` | `content` — FeatureCollection зданий с атрибутами GenBuilder, `summary` |
-| `file` | описание сохранённого слоя — см. «Слои на карте» |
+| `zones` | `source: "genplanner"`, `content` — FeatureCollection with Russian attributes |
+| `roads` | `content` — FeatureCollection with Russian attributes |
+| `result` | `content` — FeatureCollection of buildings with GenBuilder attributes, `summary` |
+| `file` | description of a stored layer — see [Map layers](#map-layers-frontend-contract) |
 | `scenario_published` | `project_id`, `scenario_id`, `zones_written`, `buildings_written`, `buildings_failed`, `buildings_total`, `services_written`, `services_failed`, `unknown_zone_names`, `unknown_service_names`, `notified`, `notified_events`, `failed_stage`, `error` |
-| `sirtep_schedule` | `content` — ответ SIRTEP как есть (`provision.house_construction_period` и `service_construction_period` — период каждого объекта, по ним красится карта), `summary` — сводка |
-| `sirtep_provision` | `content` — ТЭПы как есть, `summary` — `final_by_service`, `unbuilt_services` |
-| `master_plan_summary` | итог прогона: `buildings`, `published`, `schedule`, `provision`, `warnings`; приходит последним перед `done` |
-| `warning` | `stage`, `detail` — машинный код или текст причины, `message` — текст для пользователя |
-| `error` | `stage`, `detail` — **строка** с JSON исходной ошибки, её надо распарсить |
-| `done` | `chat_id`, `assistant_message_id`; без запуска пайплайна `assistant_message_id` — `null` |
+| `sirtep_schedule` | `content` — SIRTEP response as is (`provision.house_construction_period` and `service_construction_period` — the period of each object, used to colour the map), `summary` — summary |
+| `sirtep_provision` | `content` — TEP (planning metrics) as is, `summary` — `final_by_service`, `unbuilt_services` |
+| `master_plan_summary` | run outcome: `buildings`, `published`, `schedule`, `provision`, `warnings`; arrives last, before `done` |
+| `warning` | `stage`, `detail` — machine code or reason text, `message` — text for the user |
+| `error` | `stage`, `detail` — a **string** containing the JSON of the original error; it must be parsed |
+| `done` | `chat_id`, `assistant_message_id`; if the pipeline was not started, `assistant_message_id` is `null` |
 
-Стадии `progress` и их подписи по умолчанию:
+`progress` stages and their default captions (the service emits them in Russian):
 
-| `stage` | `content` |
-|---|---|
-| `fetch_indicators` | Читаю показатели сценария |
-| `select_profile` | Выбираю профиль застройки |
-| `genplanner` | Генерирую территориальные зоны |
-| `map_zones` | Готовлю блоки для застройки |
-| `genbuilder` | Расставляю застройку |
-| `assemble` | Собираю результат |
-| `publish_scenario` | Сохраняю сценарий для расчёта оценок |
-| `sirtep` | Считаю очерёдность строительства |
+| `stage` | `content` | Meaning |
+|---|---|---|
+| `fetch_indicators` | Читаю показатели сценария | Reading scenario indicators |
+| `select_profile` | Выбираю профиль застройки | Selecting the development profile |
+| `genplanner` | Генерирую территориальные зоны | Generating territorial zones |
+| `map_zones` | Готовлю блоки для застройки | Preparing blocks for development |
+| `genbuilder` | Расставляю застройку | Placing buildings |
+| `assemble` | Собираю результат | Assembling the result |
+| `publish_scenario` | Сохраняю сценарий для расчёта оценок | Saving the scenario for assessment |
+| `sirtep` | Считаю очерёдность строительства | Computing the construction sequence |
 
-`result.summary` — сводка по зданиям плюс то, что прислал в своём `summary` GenBuilder:
+`result.summary` is a building summary plus whatever GenBuilder sent in its own `summary`:
 
 ```json
 {
@@ -176,48 +178,51 @@ done
 }
 ```
 
-**Когда части событий не будет.** `warning` не останавливает прогон, `error` — останавливает,
-но `done` приходит всегда.
+(`"жилая многоэтажная"` = "multi-storey residential".)
 
-| Ситуация | Что меняется |
+**When some events will be missing.** A `warning` does not stop the run, an `error` does,
+but `done` always arrives.
+
+| Situation | What changes |
 |---|---|
-| `skip_generation: true` | после зон — `progress assemble` «Застройка пропущена по запросу»; нет `result` и `file(buildings)` |
-| застраивать нечего (рекреация, сельхоз) | `warning genbuilder nothing_to_build`; нет `result` |
-| GenBuilder упал | `warning genbuilder`; нет `result` |
-| слой не сохранился | один `warning store_layer`, дальше ни одного `file`; сами `zones`/`roads`/`result` приходят |
-| публикация | идёт и в трёх первых случаях, если `publish` не выключен и есть зоны |
-| нет жилых домов или сервисов в записанном сценарии | `warning sirtep sirtep_skipped` с причиной; нет `sirtep_schedule` |
-| `sirtep_wait_provision: false` | есть `sirtep_schedule`, нет `sirtep_provision` |
-| ТЭПы не досчитались за таймаут | `warning sirtep`; очередь остаётся, `master_plan_summary` приходит |
-| фатальная ошибка | `error`, затем `done` |
+| `skip_generation: true` | after the zones — `progress assemble` "Застройка пропущена по запросу" (development skipped on request); no `result` and no `file(buildings)` |
+| nothing to build (recreation, agriculture) | `warning genbuilder nothing_to_build`; no `result` |
+| GenBuilder failed | `warning genbuilder`; no `result` |
+| a layer was not stored | a single `warning store_layer`, then no `file` events at all; `zones`/`roads`/`result` themselves still arrive |
+| publishing | also happens in the first three cases, if `publish` is not disabled and there are zones |
+| no residential buildings or services in the written scenario | `warning sirtep sirtep_skipped` with the reason; no `sirtep_schedule` |
+| `sirtep_wait_provision: false` | `sirtep_schedule` present, no `sirtep_provision` |
+| TEP not computed within the timeout | `warning sirtep`; the schedule remains, `master_plan_summary` arrives |
+| fatal error | `error`, then `done` |
 
-После перезагрузки событий уже нет: карта перерисовывается по частям `kind: "file"` из истории
-чата (см. «Слои на карте»), а текст ответа — из самого сообщения: реплика модели, таблица
-«Показатели территории», причина выбора профиля, строка о сохранённом сценарии и тексты предупреждений.
+After a reload the events are gone: the map is redrawn from the `kind: "file"` parts of the chat
+history (see [Map layers](#map-layers-frontend-contract)), and the answer text comes from the message
+itself: the model's reply, the "Territory indicators" table, the reason for the profile choice, the
+line about the saved scenario and the warning texts.
 
-## Слои на карте: контракт для фронтенда
+## Map layers: frontend contract
 
-Генерация показывается на карте дважды: сразу — из самого потока, и после перезагрузки
-чата — по ссылкам из истории. Поток сам по себе не переживает перезагрузку, поэтому каждый
-слой ещё и кладётся в хранилище, а в поток и в сообщение ассистента уходит ссылка на него.
+Generation results are shown on the map twice: immediately from the stream itself, and after a chat
+reload from the links in the history. The stream itself does not survive a reload, so every
+layer is also put into storage, and a link to it is sent both in the stream and in the assistant message.
 
-**Живой поток.** Слой приходит целиком, а сразу за ним — `file` с ссылкой на его копию:
+**Live stream.** A layer arrives in full, immediately followed by a `file` event with a link to its copy:
 
 ```
 zones  → file(name=zones)  → roads → file(name=roads) → … → result → file(name=buildings) → scenario_published
 ```
 
-| Слой | Живое событие | Где GeoJSON | `file.name` |
+| Layer | Live event | Where the GeoJSON is | `file.name` |
 |---|---|---|---|
-| Территориальные зоны | `zones` | `content` — FeatureCollection зон GenPlanner | `zones` |
-| Дороги | `roads` | `content` — FeatureCollection дорог | `roads` |
-| Застройка | `result` | `content` — FeatureCollection зданий, рядом `summary` | `buildings` |
+| Territorial zones | `zones` | `content` — FeatureCollection of GenPlanner zones | `zones` |
+| Roads | `roads` | `content` — FeatureCollection of roads | `roads` |
+| Buildings | `result` | `content` — FeatureCollection of buildings, with `summary` next to it | `buildings` |
 
-`roads` приходит, только если GenPlanner их вернул. `result` и `file(buildings)` не придут,
-если застройка пропущена (`skip_generation`, нечего строить, GenBuilder упал) — тогда
-на карте остаются зоны и дороги, а причина приходит `warning`.
+`roads` arrives only if GenPlanner returned them. `result` and `file(buildings)` will not arrive
+if development was skipped (`skip_generation`, nothing to build, GenBuilder failed); in that case
+the zones and roads stay on the map, and the reason arrives as a `warning`.
 
-**Событие `file`** — описание слоя, байтов в нём нет:
+**The `file` event** describes a layer and contains no bytes:
 
 ```json
 {
@@ -233,49 +238,52 @@ zones  → file(name=zones)  → roads → file(name=roads) → … → result �
 }
 ```
 
-Файлы, которые отдал сам GenBuilder, приходят тем же событием с `source_service: "genbuilder"`.
+(`"Территориальные зоны"` = "Territorial zones".)
 
-**Атрибуты объектов.** Зоны и дороги приходят с русскими ключами — панель атрибутов
-показывает их как есть. Правила те же, что в чате GenPlanner; сохранённые файлы совпадают
-с потоком. Синхронный `POST …/run`, GenBuilder и запись в Urban API работают с исходными
-машинными свойствами GenPlanner.
+Files produced by GenBuilder itself arrive in the same event with `source_service: "genbuilder"`.
 
-| Слой | Свойство | Значение |
+**Object attributes.** Zones and roads come with Russian keys, and the attribute panel
+shows them as is. The rules are the same as in the GenPlanner chat; stored files match
+the stream. The synchronous `POST …/run`, GenBuilder and writing to Urban API work with
+GenPlanner's original machine properties.
+
+| Layer | Property | Value |
 |---|---|---|
-| Зоны | `Территориальная зона` | жилая, рекреационная, промышленная, общественно-деловая, транспортная, сельскохозяйственная, специального назначения; «не определена», если вид неизвестен |
-| Зоны | `Сгенерирована` | `Да` / `Нет`; нет ключа — GenPlanner не сообщил |
-| Зоны | `Идентификатор исходной зоны` | только у зон, взятых из существующего зонирования |
-| Дороги | `Название`, `Адрес` | только у существующих дорог |
-| Дороги | `Ширина, м` | число |
-| Дороги | `physical_object_type_id` | как в Urban API, для стиля |
-| Дороги | `road_lvl` | без перевода: `regulated highway`, `local road, level N`, `user_roads` |
-| Дороги | `road_class` | для легенды: `highway`, `street`, `existing`; нет ключа — уровень незнакомый |
+| Zones | `Территориальная зона` (territorial zone) | жилая, рекреационная, промышленная, общественно-деловая, транспортная, сельскохозяйственная, специального назначения (residential, recreational, industrial, public and business, transport, agricultural, special purpose); «не определена» (undefined) if the type is unknown |
+| Zones | `Сгенерирована` (generated) | `Да` / `Нет` (yes / no); key missing — GenPlanner did not report it |
+| Zones | `Идентификатор исходной зоны` (source zone ID) | only for zones taken from existing zoning |
+| Roads | `Название`, `Адрес` (name, address) | only for existing roads |
+| Roads | `Ширина, м` (width, m) | number |
+| Roads | `physical_object_type_id` | as in Urban API, for styling |
+| Roads | `road_lvl` | not translated: `regulated highway`, `local road, level N`, `user_roads` |
+| Roads | `road_class` | for the legend: `highway`, `street`, `existing`; key missing — unknown level |
 
-Застройка (`result`, `file(buildings)`) не переводится: ключи остаются машинными, а подписи
-и справочники значений фронт берёт у GenBuilder — `GET /generate/properties_schema`.
-Своя копия подписей здесь разошлась бы с ней при первом изменении в GenBuilder.
+Buildings (`result`, `file(buildings)`) are not translated: the keys stay machine-readable, and the
+frontend takes labels and value dictionaries from GenBuilder via `GET /generate/properties_schema`.
+A separate copy of the labels here would diverge from it at the first change in GenBuilder.
 
-**История чата.** Сообщение ассистента в ChatStorage — текст первой частью, затем по части
-`{"kind": "file", "payload": {...}}` на каждый слой; в `payload` те же поля, что в событии
-`file`, кроме пустых. Чтобы перерисовать карту, фронт берёт части `kind == "file"`,
-раскладывает их по `name` и запрашивает `url` с тем же `Authorization: Bearer <token>`.
-Ответ — `application/geo+json`, тот же FeatureCollection, что был в потоке. Неизвестный слой
-или прогон — `404`, недоступное хранилище — `502`.
+**Chat history.** The assistant message in ChatStorage has the text as its first part, followed by one
+`{"kind": "file", "payload": {...}}` part per layer; `payload` has the same fields as the `file`
+event, except empty ones. To redraw the map, the frontend takes the `kind == "file"` parts,
+sorts them by `name` and requests `url` with the same `Authorization: Bearer <token>`.
+The response is `application/geo+json`, the same FeatureCollection that was in the stream. An unknown
+layer or run → `404`, unavailable storage → `502`.
 
-**Если слой не сохранился**, в потоке будет один `warning` со `stage: "store_layer"`, а
-событий `file` до конца прогона больше не будет. Это не ошибка: карта из потока уже
-нарисована, пропадёт только перерисовка после перезагрузки.
+**If a layer was not stored**, the stream contains a single `warning` with `stage: "store_layer"`, and
+no further `file` events will arrive until the end of the run. This is not an error: the map from the
+stream has already been drawn; only the redraw after a reload is lost.
 
-**Хранилище.** MinIO, если заданы все четыре `MINIO_*` (частичный набор — ошибка
-конфигурации, сервис запустится без хранилища и напишет это в лог); если не задан ни один —
-каталог `OUTPUTS_DIR` на диске, что годится только для локальной разработки. MinIO живёт
-в закрытой сети, поэтому файлы отдаются через сам сервис, а не прямыми ссылками в бакет.
-`MINIO_ADDRESS` — адрес S3 API вида `http://host:9000` (не веб-консоли); схема `https://` включает TLS.
-`url` — относительный путь без адреса сервиса: фронт подставляет свою базу по
-`source_service` (у старых записей с абсолютной ссылкой отрезает origin). Так в историю
-не попадает внутренний адрес пода, который из внешней сети не открывается.
+**Storage.** MinIO, if all four `MINIO_*` variables are set (a partial set is a configuration
+error: the service starts without storage and logs it); if none is set, the `OUTPUTS_DIR`
+directory on disk, which is suitable only for local development. MinIO lives in a closed
+network, so files are served through the service itself rather than via direct links to the bucket.
+`MINIO_ADDRESS` is the S3 API address in the form `http://host:9000` (not the web console); the
+`https://` scheme enables TLS. `url` is a relative path without the service address: the frontend
+prepends its own base by `source_service` (for old records with an absolute link it strips the origin).
+This way the internal pod address, which is not reachable from the external network, never ends up in
+the history.
 
-## Раскладка
+## Layout
 
 ```
 app/
@@ -288,242 +296,253 @@ app/
   system/             health · logs
 ```
 
-Три таблицы перевода между чужими системами идентификаторов собраны в одном месте —
+The three translation tables between other systems' identifier spaces are collected in one place:
 [`app/common/constants/pipeline_constants.py`](app/common/constants/pipeline_constants.py).
-Большинство ошибок пайплайна сводится к рассинхрону одной из них, поэтому они покрыты
-тестом на полноту (`tests/test_constants.py`).
+Most pipeline errors come down to one of them getting out of sync, so they are covered by a
+completeness test (`tests/test_constants.py`).
 
-## Показатели сценария
+## Scenario indicators
 
-Схема `indicators_values` сверена с OpenAPI стенда (`ScenarioIndicatorValue`):
+The `indicators_values` schema has been checked against the environment's OpenAPI (`ScenarioIndicatorValue`):
 
-- фильтр по индикаторам делает сам Urban API — query-параметр `indicator_ids`, id через запятую;
-- `indicator_id` лежит внутри вложенного объекта `indicator`, а не в корне строки;
-- полей `date_value`/`value_type` нет — свежесть определяют `updated_at`/`created_at`;
-- значение может быть привязано к гексагону (`hexagon_id`), и таких строк в ответе большинство.
+- filtering by indicator is done by Urban API itself: the `indicator_ids` query parameter, comma-separated IDs;
+- `indicator_id` is inside the nested `indicator` object, not at the root of the row;
+- there are no `date_value`/`value_type` fields; freshness is determined by `updated_at`/`created_at`;
+- a value can be bound to a hexagon (`hexagon_id`), and most rows in the response are like that.
 
-Отсюда правило выбора в `UrbanApiClient.latest_values_by_indicator`: сначала территориальное
-значение (`hexagon_id` пуст), среди равных — самое свежее. Иначе можно сравнить агрегат по
-территории у одного индикатора с одной ячейкой у другого и выбрать не тот профиль.
+Hence the selection rule in `UrbanApiClient.latest_values_by_indicator`: territory-level values
+first (`hexagon_id` empty), and among equals the most recent one. Otherwise one could compare the
+territory aggregate of one indicator with a single cell of another and pick the wrong profile.
 
-## Витрина показателей
+## Indicator showcase
 
-Кроме десяти индикаторов выбора сервис показывает и остальные показатели проекта —
-событием `territory_indicators` и ручкой `GET /scenarios/{id}/indicators`. Два уровня
-в одном ответе, чтобы фронтенд сам решал, сколько показать:
+Besides the ten selection indicators, the service also shows the project's other indicators,
+via the `territory_indicators` event and the `GET /scenarios/{id}/indicators` endpoint. Two levels
+in one response, so the frontend decides how much to show:
 
-- `highlights` — «паспорт территории», 8 показателей в фиксированном порядке
-  (численность, плотность, площадь, урбанизация, % земель НП, средний возраст,
-  плотность УДС, ИКГС). Именно они уходят Markdown-таблицей в текст ответа чата;
-- `sections` — всё остальное, разложенное по разделам справочника
-  `GET /api/v1/indicators_groups` (Демография, Транспорт, Экономика…), строки внутри
-  раздела отсортированы по `list_label` естественным порядком (`1.2.10` после `1.2.9`).
+- `highlights` — the "territory passport", 8 indicators in a fixed order
+  (population, density, area, urbanization, % of settlement land, average age,
+  street and road network density, urban environment quality index). These are the ones sent
+  as a Markdown table in the chat answer text;
+- `sections` — everything else, grouped by the sections of the
+  `GET /api/v1/indicators_groups` reference (Demography, Transport, Economy…); rows within a
+  section are sorted by `list_label` in natural order (`1.2.10` after `1.2.9`).
 
-Названия, единицы и нумерацию отдаёт сам Urban API (`indicator.name_full`,
-`measurement_unit`, `list_label`) — своего справочника показателей у сервиса нет,
-он бы неизбежно разошёлся со стендом. Наше только два списка в
+Names, units and numbering are provided by Urban API itself (`indicator.name_full`,
+`measurement_unit`, `list_label`); the service has no indicator reference of its own, since
+it would inevitably diverge from the environment. Only two lists are ours, in
 [`pipeline_constants.py`](app/common/constants/pipeline_constants.py):
-порядок «паспорта» и русские заголовки разделов.
+the order of the "passport" and the Russian section headings.
 
-Показатель состоит сразу в нескольких группах (`Численность населения` — и в `regional`,
-и в `demogrphy`), поэтому раздел выбирается по `INDICATOR_GROUP_ORDER`: тематические
-группы вперёд, сборные (`regional`, `common`) в конец. Показатели вне групп — включая
-семейство 269 — попадают в «Прочие показатели».
+An indicator belongs to several groups at once (`Численность населения` (population) is in both
+`regional` and `demogrphy`), so the section is chosen by `INDICATOR_GROUP_ORDER`: thematic
+groups first, catch-all groups (`regional`, `common`) last. Indicators outside any group,
+including family 269, go to "Other indicators".
 
-Запрос отдельный от выбора профиля и **нефатальный**: выбор тянет ровно десять
-индикаторов и обязан быть предсказуемым, витрина забирает у сценария всё. Если она
-не собралась, прогон продолжается, а наверх уходит `warning`. Справочник групп
-кэшируется в памяти на час.
+The request is separate from profile selection and is **non-fatal**: the selection fetches exactly ten
+indicators and must be predictable, while the showcase pulls everything from the scenario. If it
+cannot be assembled, the run continues and a `warning` is sent upstream. The groups reference
+is cached in memory for an hour.
 
-## Запрос в GenPlanner
+## Request to GenPlanner
 
-`POST /genplanner/run_func_generation` объявлен как `Annotated[GenPlannerFuncZonesDTO, Depends(...)]`,
-а не как тело запроса, поэтому FastAPI раскладывает поля DTO по двум местам:
+`POST /genplanner/run_func_generation` is declared as `Annotated[GenPlannerFuncZonesDTO, Depends(...)]`,
+not as a request body, so FastAPI splits the DTO fields between two places:
 
-| Где | Поля |
+| Where | Fields |
 |---|---|
 | query | `project_id`, `scenario_id`, `roads_extend_distance`, `elevation_angle`, `ignore_default_relations`, `test` |
-| body | `territory_balance` (обязательно), `fix_zones`, `min_block_area`, `functional_zones`, `neighbour_pairs`, `forbidden_pairs` |
+| body | `territory_balance` (required), `fix_zones`, `min_block_area`, `functional_zones`, `neighbour_pairs`, `forbidden_pairs` |
 
-`project_id` обязателен, поэтому сервис сначала достаёт его из `GET /api/v1/scenarios/{id}`
-(`scenario.project.project_id`); переопределяется полем `project_id` в опциях прогона.
+`project_id` is required, so the service first gets it from `GET /api/v1/scenarios/{id}`
+(`scenario.project.project_id`); it can be overridden by the `project_id` field in the run options.
 
-## Запрос в GenBuilder
+## Request to GenBuilder
 
-`POST /generate/by_territory` принимает `TerritoryRequest`. Два места, где легко ошибиться:
+`POST /generate/by_territory` accepts a `TerritoryRequest`. Two places where it is easy to make a mistake:
 
-**`targets_by_zone` — параметр снаружи, зона внутри.** GenBuilder читает
-`targets_by_zone["floors_avg"]["residential"]`, а не `["residential"]["floors_avg"]`.
-Обе формы — `dict[str, dict]`, поэтому перевёрнутую он принимает молча и игнорирует,
-откатываясь на свои дефолты. Внутри сервиса таргеты живут по зонам (так их удобно
-переопределять через `targets_overrides`), а `to_genbuilder_targets` разворачивает их
-перед отправкой. Допустимые параметры: `residents`, `coverage_area`, `floors_avg`,
-`density_scenario` (только `min`/`mean`/`max`), `default_floor_group`.
+**`targets_by_zone`: parameter outside, zone inside.** GenBuilder reads
+`targets_by_zone["floors_avg"]["residential"]`, not `["residential"]["floors_avg"]`.
+Both forms are `dict[str, dict]`, so it silently accepts the inverted one and ignores it,
+falling back to its defaults. Inside the service, targets are kept per zone (which makes them
+easy to override via `targets_overrides`), and `to_genbuilder_targets` inverts them
+before sending. Allowed parameters: `residents`, `coverage_area`, `floors_avg`,
+`density_scenario` (only `min`/`mean`/`max`), `default_floor_group`.
 
-**Без цели объёма зона не застраивается.** Генерация разбита на три ветки, у каждой
-свой порог: жильё требует `residents > 0`, промзона/транспорт/спецназначение —
-`coverage_area > 0`, деловая и «базовая» — любое из двух. Зоны без цели попадают
-в событие `warning` с кодом `no_volume_target`.
+**A zone without a volume target is not developed.** Generation is split into three branches, each with
+its own threshold: housing requires `residents > 0`, industrial/transport/special-purpose zones
+require `coverage_area > 0`, business and "basic" zones require either of the two. Zones without a
+target are listed in a `warning` event with the code `no_volume_target`.
 
-Обе цели абсолютные — на всю территорию, поэтому политика задаёт их удельно
-(`residents_per_ha` и `coverage_ratio`), а абсолютные значения считаются от суммарной
-площади блоков зоны. Площадь берётся из самой геометрии по сферической формуле
-([`geo_area.py`](app/pipeline/geo_area.py)) — без geopandas, чтобы не тянуть стек GDAL
-ради одной формулы. Площади по зонам едут в `mapping_summary.area_ha`.
+Both targets are absolute, for the whole territory, so the policy sets them as specific values
+(`residents_per_ha` and `coverage_ratio`), and the absolute values are computed from the total
+area of the zone's blocks. The area is computed from the geometry itself using a spherical formula
+([`geo_area.py`](app/pipeline/geo_area.py)), without geopandas, so as not to pull in the GDAL stack
+for a single formula. Per-zone areas go into `mapping_summary.area_ha`.
 
-Удельные величины ограничены сверху: плотность — потолком своей группы этажности,
-застроенность — `COVERAGE_RATIO_CAP`. Абсолютные `residents`/`coverage_area`
-в `targets_overrides` побеждают расчёт по площади (см. «Число жителей»).
+Specific values are capped: density by the ceiling of its floor-count group, coverage
+by `COVERAGE_RATIO_CAP`. Absolute `residents`/`coverage_area` values in `targets_overrides`
+take precedence over the area-based calculation (see [Number of residents](#number-of-residents)).
 
-Блоки: у каждой feature обязателен непустой `properties.zone` и геометрия
-Polygon/MultiPolygon. `properties.floors_group` на блоке перекрывает `default_floor_group`.
+Blocks: every feature must have a non-empty `properties.zone` and a
+Polygon/MultiPolygon geometry. `properties.floors_group` on a block overrides `default_floor_group`.
 
-## Число жителей
+## Number of residents
 
-Не спрашивается — ни у фронта, ни в чате. Пайплайн выводит его сам:
-площадь блоков зоны × нормативная плотность профиля, ограниченная потолком
-своей группы этажности. Это и есть политика D4 «максимум в нормативных рамках»:
-задавать число снаружи означало бы либо недобрать ёмкость, либо выйти за норматив.
+It is not asked for, neither from the frontend nor in the chat. The pipeline derives it itself:
+the area of the zone's blocks × the profile's standard density, capped by the ceiling of its
+floor-count group. This is policy D4, "maximum within regulatory limits": setting the number
+from outside would mean either under-using the capacity or exceeding the standard.
 
-Перебить расчёт всё ещё можно точечно — абсолютным `targets_overrides.residential.residents`;
-это ручной аварийный выход, а не обычный путь. Итоговые опции прогона сохраняются
-в `metadata` ответного сообщения чата, чтобы переопределения пережили перезагрузку.
+The calculation can still be overridden selectively with an absolute
+`targets_overrides.residential.residents`; this is a manual emergency exit, not the normal path.
+The final run options are saved in the `metadata` of the chat response message, so that overrides
+survive a reload.
 
-## Публикация сценария и запуск оценок
+## Publishing the scenario and triggering assessments
 
-Оценки считают сторонние сервисы, подписанные на Kafka. Своего продюсера сервис
-не держит: у Urban API есть HTTP-фасад над брокером (`/api/broker/...`) — обычный
-POST, которым мы и пользуемся.
+Assessments are computed by third-party services subscribed to Kafka. The service does not run its own
+producer: Urban API has an HTTP facade over the broker (`/api/broker/...`), a plain
+POST, which is what we use.
 
-Порядок в `ScenarioPublisher` обязателен и не переставляется:
+The order in `ScenarioPublisher` is mandatory and cannot be rearranged:
 
-| | Действие | Ручка |
+| | Action | Endpoint |
 |---|---|---|
-| 1 | проект-контейнер сервисной учётки (один на исходный проект) | `POST /api/v1/projects?user_id=…` |
-| 2 | копия исходного сценария в этот проект | `POST /api/v1/scenarios/{id}` |
-| 3 | зоны GenPlanner — одним запросом, ручка принимает массив | `POST /scenarios/{id}/functional_zones` |
-| 4 | здания GenBuilder — по два запроса на здание | `POST /scenarios/{id}/physical_objects` → `/buildings` |
-| 5 | объявление в брокер | `POST /api/broker/scenario_events/…` |
+| 1 | container project of the service account (one per source project) | `POST /api/v1/projects?user_id=…` |
+| 2 | copy of the source scenario into this project | `POST /api/v1/scenarios/{id}` |
+| 3 | GenPlanner zones, in one request (the endpoint accepts an array) | `POST /scenarios/{id}/functional_zones` |
+| 4 | GenBuilder buildings, two requests per building | `POST /scenarios/{id}/physical_objects` → `/buildings` |
+| 5 | announcement to the broker | `POST /api/broker/scenario_events/…` |
 
-Сообщения уходят **последними**: сервисы оценок по ним идут читать сценарий, и опередить
-запись данных нельзя — они посчитают пустоту. Пустой сценарий не анонсируется вовсе.
+Messages are sent **last**: the assessment services go and read the scenario when they receive them,
+and must not get ahead of the data being written, or they will compute an empty scenario. An empty
+scenario is not announced at all.
 
-**Почему сервисная учётка.** Владельца можно задать ровно в одном месте API —
-`POST /api/v1/projects?user_id=...`; у `Copy Scenario` его нет, сценарий наследует проект,
-а проект — своего хозяина. Поэтому генерация складывается в проект сервисного аккаунта
-и в проекте пользователя не появляется. Сам `user_id` не настраивается: он берётся из
-claim `sub` того же токена, которым мы пишем, — иначе учётка и её секрет могли бы разъехаться.
+**Why a service account.** The owner can be set in exactly one place in the API,
+`POST /api/v1/projects?user_id=...`; `Copy Scenario` has no such option: a scenario inherits its project,
+and a project inherits its owner. Therefore the generated result is placed in the service account's
+project and does not appear in the user's project. The `user_id` itself is not configurable: it is taken
+from the `sub` claim of the same token we write with; otherwise the account and its secret could drift apart.
 
-Исходный проект читается токеном пользователя (свой проект видит только он), пишется —
-сервисным. Это единственное место, где в одном действии участвуют оба токена.
+The source project is read with the user's token (only the user can see their own project) and written
+with the service token. This is the only place where both tokens take part in one action.
 
-Публикация не фатальна: если Urban API недоступен или прав не хватило, прогон отдаёт
-`warning` со стадией `publish_scenario`, а зоны и застройка остаются у пользователя.
+Publishing is non-fatal: if Urban API is unavailable or permissions are insufficient, the run emits a
+`warning` with the `publish_scenario` stage, and the zones and buildings remain with the user.
 
 
-## Очерёдность строительства (SIRTEP)
+## Construction sequence (SIRTEP)
 
-Стадия идёт **после** публикации и по опубликованному сценарию: SIRTEP читает его из
-Urban API сам, поэтому без `PUBLISH_TO_URBAN` включать её бессмысленно: стадия включается,
-только когда заданы и `SIRTEP_API`, и публикация. Токен нужен **сервисный**: сценарий лежит в проекте сервисной
-учётки, пользовательский его не увидит, а SIRTEP токен не проверяет, а передаёт дальше. Сам заголовок при этом обязателен: без
-`Authorization` ручки отвечают 401, не дойдя до Urban API.
+This stage runs **after** publishing and works on the published scenario: SIRTEP reads it from
+Urban API by itself, so enabling it without `PUBLISH_TO_URBAN` is pointless; the stage is enabled
+only when both `SIRTEP_API` and publishing are configured. A **service** token is required: the scenario
+lives in the service account's project, the user's token would not see it, and SIRTEP does not verify the
+token but passes it on. The header itself is still mandatory: without `Authorization`, the endpoints
+respond with 401 before reaching Urban API.
 
-| | Действие | Ручка |
+| | Action | Endpoint |
 |---|---|---|
-| 1 | очередь строительства, синхронно | `GET /optimize/scheduler` |
-| 2 | обеспеченность по периодам, опрос до готовности | `GET /optimize/teps` |
+| 1 | construction schedule, synchronous | `GET /optimize/scheduler` |
+| 2 | service provision by period, polled until ready | `GET /optimize/teps` |
 
-Горизонт по умолчанию — **20 кварталов по 100 000 м²**, то есть потолок в 2 млн м² жилой площади
-домов и пятен сервисов. Библиотечные 40 кварталов на наших объёмах давали разрежённую очередь:
-замер на стенде 2026-09-16 показал 415 801 м² — около четырёх периодов застройки, растянутых на
-тридцать пять. Если объём в горизонт не влезает, SIRTEP не падает, а возвращает комментарий
-«Ни одно здание не будет построено» — он попадает в справку. Горизонт меняется на прогон опциями
-`sirtep_periods` и `sirtep_max_area_per_period`.
+The default horizon is **20 quarters of 100,000 m² each**, i.e. a ceiling of 2 million m² of residential
+floor area of houses and service footprints. The library default of 40 quarters produced a sparse schedule
+at our volumes: a measurement on the environment on 2026-09-16 showed 415,801 m², about four construction
+periods stretched over thirty-five. If the volume does not fit into the horizon, SIRTEP does not fail but
+returns the comment "Ни одно здание не будет построено" ("No building will be constructed"), which ends up
+in the summary. The horizon can be changed per run with the `sirtep_periods` and
+`sirtep_max_area_per_period` options.
 
-`profile_id` всегда `1`: в provision-ветке профиль выбирает только саму ветку, а `/optimize/teps`
-версии 0.3.1 принимает лишь 1, 2 и 8. Профиль прогона на это не влияет.
+`profile_id` is always `1`: in the provision branch the profile only selects the branch itself, and
+`/optimize/teps` version 0.3.1 accepts only 1, 2 and 8. The run profile does not affect this.
 
-**Когда не зовём.** SIRTEP отвечает 400 без жилых домов и 500 без сервисов, и ни то, ни другое
-пользователю ничего не объясняет. Поэтому условие проверяется по записанным данным заранее:
-сценарий записан целиком (сбой на шаге `broker` не помеха — данные на месте), есть хотя бы один
-дом типа «Жилой дом» и хотя бы один сервис. Иначе — `warning` с причиной.
+**When we do not call it.** SIRTEP responds with 400 if there are no residential buildings and with 500 if
+there are no services, and neither explains anything to the user. Therefore the condition is checked in
+advance against the written data: the scenario has been written completely (a failure at the `broker` step
+does not matter, the data is in place), there is at least one building of type "Жилой дом" (residential
+building) and at least one service. Otherwise a `warning` with the reason is emitted.
 
-Проверяется именно состав записанного, а не профиль прогона: дома жилыми делает тип физобъекта,
-и нежилой профиль может дать жилые кварталы в балансе зон, и наоборот.
+What is checked is the composition of what was written, not the run profile: buildings are made residential
+by the physical object type, and a non-residential profile can produce residential blocks in the zone
+balance, and vice versa.
 
-**Почему `/teps` опрашивается.** ТЭПы считаются фоном после очереди. Версия 0.3.1 на незавершённом
-расчёте отвечает 500 «кэш повреждён» вместо «в процессе» — задача кладётся в кэш с датой в
-идентификаторе, а ищется без неё. Поэтому любой 5xx до истечения `SIRTEP_PROVISION_TIMEOUT_SECONDS`
-считается «ещё не готово», а 4xx поднимается сразу.
+**Why `/teps` is polled.** TEPs are computed in the background after the schedule. Version 0.3.1 responds to
+an unfinished computation with 500 "cache corrupted" instead of "in progress": the task is put into the cache
+with a date in its identifier but looked up without it. Therefore any 5xx before
+`SIRTEP_PROVISION_TIMEOUT_SECONDS` expires is treated as "not ready yet", while a 4xx is raised immediately.
 
-Синхронный `POST /run` ждёт ТЭПы наравне с потоком: иначе обеспеченность недостижима — своего
-токена к служебному проекту у вызывающего нет. Отказ от ожидания — опцией `sirtep_wait_provision`,
-она работает одинаково в обоих путях.
+The synchronous `POST /run` waits for TEPs just like the stream does: otherwise service provision would be
+unreachable, since the caller has no token of their own for the service project. Waiting can be turned off
+with the `sirtep_wait_provision` option, which works the same way in both paths.
 
-Стадия не фатальна: очередь не посчиталась — зоны, застройка и сценарий остаются у пользователя.
-Глобально запись **выключена по умолчанию** и включается только явно — `PUBLISH_TO_URBAN=true`:
-сервис деплоится в dev-кластер автоматически, и запись в общий стенд не должна включаться сама.
-На отдельный прогон выключается `publish: false` в опциях.
+The stage is non-fatal: if the schedule could not be computed, the zones, buildings and scenario remain with
+the user. Globally, writing is **disabled by default** and is enabled only explicitly with
+`PUBLISH_TO_URBAN=true`: the service is deployed to the dev cluster automatically, and writing to the shared
+environment must not turn on by itself. For an individual run it is disabled with `publish: false` in the options.
 
-**Новой таблицы перевода зон не понадобилось.** `functional_zone_type_id` Urban API —
-то же пространство идентификаторов, что и профили GenPlanner: 1 residential, 2 recreation,
-7 business, 13 residential_multistorey. Все 12 наших профилей есть в справочнике стенда
-(`tests/test_constants.py` это стережёт), поэтому `properties.territory_zone` пишется как есть,
-а справочник нужен только чтобы убедиться, что стенд такой id знает. Имя — запасной путь:
-в справочнике имена английские (`residential_multistorey`), русское лежит в `zone_nickname`,
-а GenPlanner отдаёт своё («жилая многоэтажная») — его переводит `ZONE_NAME_TO_PROFILE`.
-Зона, которую не удалось опознать, пропускается и попадает в `unknown_zone_names`.
+**No new zone translation table was needed.** Urban API's `functional_zone_type_id` uses the same
+identifier space as the GenPlanner profiles: 1 residential, 2 recreation, 7 business,
+13 residential_multistorey. All 12 of our profiles exist in the environment's reference
+(`tests/test_constants.py` guards this), so `properties.territory_zone` is written as is,
+and the reference is needed only to make sure the environment knows the id. The name is a fallback:
+in the reference the names are in English (`residential_multistorey`), the Russian one is in `zone_nickname`,
+and GenPlanner returns its own ("жилая многоэтажная", multi-storey residential), which is translated by
+`ZONE_NAME_TO_PROFILE`. A zone that cannot be identified is skipped and listed in `unknown_zone_names`.
 
-Здания раскладываются по типам физобъектов: `residential` → «Жилой дом», остальные →
-«Нежилое здание». В константах имена, а не id: id у каждого стенда свои.
+Buildings are assigned physical object types: `residential` → "Жилой дом" (residential building), all others →
+"Нежилое здание" (non-residential building). The constants hold names, not ids: every environment has its own ids.
 
-## Чат: ChatStorage и vLLM
+## Chat: ChatStorage and vLLM
 
-Форма запросов сверена с клиентами GenPlanner и GenBuilder — оба сервиса ходят
-в те же общие сервисы.
+The request format has been checked against the GenPlanner and GenBuilder clients; both services talk
+to the same shared services.
 
-**ChatStorage.** Аутентификация — сервисный токен Keycloak (`client_credentials`),
-пользователь передаётся заголовком `X-User-Id`; без него запрос отклоняется.
-В теле `create_chat` `scenario_id` и `project_id` лежат **на верхнем уровне**,
-а не в `metadata`, иначе чат не привяжется к сценарию. `metadata` необнуляемая —
-всегда шлём хотя бы `{}`. Сообщения многочастные: `parts: [{kind, payload}]`.
+**ChatStorage.** Authentication uses a Keycloak service token (`client_credentials`);
+the user is passed in the `X-User-Id` header, and requests without it are rejected.
+In the `create_chat` body, `scenario_id` and `project_id` are **at the top level**,
+not in `metadata`, otherwise the chat will not be linked to the scenario. `metadata` is non-nullable:
+always send at least `{}`. Messages are multipart: `parts: [{kind, payload}]`.
 
-**vLLM.** OpenAI-совместимый `/v1/chat/completions`; базовый URL нормализуется,
-чтобы `/v1` не удвоился. В `json_schema` уходят только `name` и `schema` —
-`strict` соседние сервисы не шлют. Об ошибке vLLM сообщает полем `error` в теле,
-в том числе со статусом `200` и внутри потока, поэтому тело проверяется отдельно.
-Битый SSE-фрейм пропускается с предупреждением, а не рвёт начатый ответ;
-структурный ответ разбирается и из обёртки ```` ```json ````.
+**vLLM.** OpenAI-compatible `/v1/chat/completions`; the base URL is normalized
+so that `/v1` is not doubled. Only `name` and `schema` are sent in `json_schema`;
+neighbouring services do not send `strict`. vLLM reports errors via an `error` field in the body,
+including with status `200` and inside the stream, so the body is checked separately.
+A broken SSE frame is skipped with a warning rather than breaking an answer already in progress;
+a structured answer is also parsed from a ```` ```json ```` wrapper.
 
-## Текстовые отчёты сервиса
+## Text reports
 
-После выполнения операции чат дополнительно возвращает событие `file` с
-`name: "report"`, `role: "report"`, `mime_type: "text/plain"`, `filename: "Отчёт.txt"`.
-Обычный текстовый ответ остаётся в потоке. Ссылка на отчёт сохраняется рядом с ним
-в истории ChatStorage как часть `kind: "file"`; содержимое файла в историю не копируется.
+After an operation completes, the chat additionally emits a `file` event with
+`name: "report"`, `role: "report"`, `mime_type: "text/plain"`, `filename: "Отчёт.txt"`
+("Report.txt"). The regular text answer stays in the stream. The link to the report is
+stored next to it in the ChatStorage history as a `kind: "file"` part; the file contents
+are not copied into the history.
 
-Дескриптор содержит две долговечные ссылки относительно базы `source_service`:
+The descriptor carries two durable links relative to the `source_service` base URL:
 
-- `url`: `GET /buildplanner/reports/id` — UTF-8 текст для просмотра (`Content-Disposition: inline`).
-- `download_url`: тот же адрес с `?download=true` — скачивание (`attachment; filename="report.txt"`).
+- `url`: `GET /buildplanner/reports/id` — UTF-8 text for viewing (`Content-Disposition: inline`).
+- `download_url`: the same address with `?download=true` — download (`attachment; filename="report.txt"`).
 
-Дескриптор находится в `content` события `file`.
-Отчёт включает полный ответ, параметры и сценарий, показатели территории, результаты этапов и предупреждения.
+The descriptor is located in the `content` of the `file` event.
+The report includes the full answer, the parameters and the scenario, the territory indicators,
+the results of each stage and the warnings.
 
-Фронтенду следует читать отчёт как текст, не как GeoJSON и не как HTML. Для показа
-достаточно `fetch(url).text()` и текстового компонента с сохранением переносов строк.
-Ссылки проходят через API сервиса: доступ к внутреннему MinIO браузеру не нужен.
-При сбое хранилища выдаётся `warning` с `stage: store_report`; ответ и результаты операции сохраняются.
+The frontend should read the report as text, not as GeoJSON or HTML. To display it,
+`fetch(url).text()` and a text component that preserves line breaks are enough.
+Links go through the service API, so the browser never needs access to the internal MinIO.
+If storage fails, a `warning` with `stage: store_report` is emitted; the answer and the operation
+results are preserved.
 
+The report is written in Russian, following the layout of a regulatory compliance check:
+headings, a summary metrics table and separate detail sections. In PZZ (zoning
+regulations) reports, objects are grouped by compliance and by whether they need manual
+review; a classification result is never presented as a PZZ compliance check.
+The text is saved as UTF-8 TXT with Markdown markup suitable for rendering on the
+frontend. Internal API fields are omitted; parameter names, zone names and system
+statuses are translated. Original zone codes, VRI (permitted use type) codes, document
+codes and metric values are kept as is. These changes affect only how the report is
+presented; the JSON and SSE schemas are unchanged.
 
-Отчёт оформлен на русском языке по образцу нормативной проверки: заголовки,
-таблица сводных показателей и отдельные разделы подробностей. В отчётах ПЗЗ
-объекты сгруппированы по соответствию и необходимости ручной проверки;
-результат классификации не объявляется проверкой соответствия ПЗЗ.
-Текст сохраняется в UTF-8 TXT с разметкой Markdown, пригодной для отображения
-на фронте. Служебные поля API исключены; названия параметров, зон и системные
-статусы переведены. Исходные коды зон, ВРИ, документов и значения показателей
-сохраняются. Изменения касаются представления отчёта, схема JSON и SSE не меняется.
-
-Для скачивания используется русское имя `Отчёт.txt` через параметр заголовка `filename*`; `filename` содержит совместимое резервное имя.
+For download, the Russian file name `Отчёт.txt` is sent via the `filename*` header
+parameter; `filename` carries an ASCII-compatible fallback name.
