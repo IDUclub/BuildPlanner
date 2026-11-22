@@ -1,3 +1,5 @@
+**English** | [Русский](README.ru.md)
+
 # BuildPlanner API
 
 Orchestrator of the **GenPlanner → GenBuilder** pipeline. Given a `scenario_id`, it selects an urban
